@@ -108,6 +108,7 @@ function InfoLabel({style, label, info}) {
 
 export default function App() {
   const { NativeBridgeModule } = NativeModules;
+  const androidClipboardPackage = NativeModules.ClipboardListener?.applicationId || 'com.clipcascade';
 
   const isMountedRef = useRef(true);
   const loginInProgressRef = useRef(false);
@@ -1575,7 +1576,7 @@ export default function App() {
                       { fontWeight: 'bold', marginLeft: 15 },
                     ]}
                   >
-                    {`> adb -d shell pm grant com.clipcascade android.permission.READ_LOGS`}
+                    {`> adb -d shell pm grant ${androidClipboardPackage} android.permission.READ_LOGS`}
                   </Text>
 
                   <Text style={styles.label}>
@@ -1589,7 +1590,7 @@ export default function App() {
                       { fontWeight: 'bold', marginLeft: 15 },
                     ]}
                   >
-                    {`> adb -d shell appops set com.clipcascade SYSTEM_ALERT_WINDOW allow`}
+                    {`> adb -d shell appops set ${androidClipboardPackage} SYSTEM_ALERT_WINDOW allow`}
                   </Text>
 
                   <Text style={styles.label}>
@@ -1602,7 +1603,7 @@ export default function App() {
                       { fontWeight: 'bold', marginLeft: 15 },
                     ]}
                   >
-                    {`> adb -d shell am force-stop com.clipcascade`}
+                    {`> adb -d shell am force-stop ${androidClipboardPackage}`}
                   </Text>
                 </View>
               </View>
