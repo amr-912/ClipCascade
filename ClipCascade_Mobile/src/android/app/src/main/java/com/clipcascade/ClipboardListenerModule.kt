@@ -20,6 +20,11 @@ import java.util.Date
 import java.util.Locale
 
 
+// Exact label of images ClipCascade writes from a remote device. This marker
+// protects the next genuine user copy from being consumed by JS echo suppression.
+// It does not change the image URI, MIME type, or Samsung clipboard history.
+internal const val CLIPCASCADE_REMOTE_IMAGE_LABEL = "ClipCascade Remote Image"
+
 class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private var clipboardManager: ClipboardManager =
         reactContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -52,6 +57,12 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
             if (clip != null && clip.itemCount > 0) {
 
                 val description = clip.description
+                // This image was written by our own receive path, not copied
+                // by the user. Filter the *specific event*, rather than
+                // suppressing an unrelated future clipboard change.
+                if (description?.label?.toString() == CLIPCASCADE_REMOTE_IMAGE_LABEL) {
+                    return@OnPrimaryClipChangedListener
+                }
                 if (description != null) { 
 
                     val mimeType = description.getMimeType(0)
