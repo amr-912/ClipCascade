@@ -57,7 +57,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - uses: android-actions/setup-android@v3
+      - name: Check GitHub runner Android SDK
+        run: |
+          test -n "$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platforms"
+          echo "Using preinstalled SDK at $ANDROID_HOME"
       - name: Install locked dependencies
         working-directory: ClipCascade_Mobile/src
         run: npm ci --no-audit --no-fund
