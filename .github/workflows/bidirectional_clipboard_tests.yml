@@ -4,9 +4,11 @@ on:
   pull_request:
     paths:
       - 'ClipCascade_Mobile/src/StartForegroundService.js'
+      - 'ClipCascade_Mobile/src/App.js'
       - 'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/**'
       - 'ClipCascade_Desktop/src/p2p/p2p_manager.py'
       - 'tests/test_android_clipboard_transport.cjs'
+      - 'docs/ANDROID_SCREENSHOT_FIELD_TEST.md'
       - 'tests/test_clipboard_p2p_backpressure.py'
       - '.github/workflows/bidirectional_clipboard_tests.yml'
   workflow_dispatch:
@@ -98,6 +100,12 @@ jobs:
             adb -d shell pm grant com.clipcascade.preview android.permission.READ_LOGS
             adb -d shell appops set com.clipcascade.preview SYSTEM_ALERT_WINDOW allow
           Then force-stop the preview and start it, accepting Android log access.
+          On the connected screen, capture a NEW Samsung screenshot, return
+          to Preview, then tap "Inspect Clipboard (metadata only)".
+          Record event counts, MIME types, detectedType, imageReadable and
+          lastTransportStage; do not share sensitive clipboard contents.
+          Windows: open Paint and press Ctrl+V to confirm actual delivery.
+          Technical decision tree: docs/ANDROID_SCREENSHOT_FIELD_TEST.md
           Do not install on top of the original app or upload passwords/keys.
           EOF
       - uses: actions/upload-artifact@v4
