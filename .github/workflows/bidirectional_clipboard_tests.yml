@@ -1,0 +1,68 @@
+name: Bidirectional clipboard reliability (Android + Windows)
+
+on:
+  pull_request:
+    paths:
+      - 'ClipCascade_Mobile/src/StartForegroundService.js'
+      - 'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/**'
+      - 'ClipCascade_Desktop/src/p2p/p2p_manager.py'
+      - 'tests/test_android_clipboard_transport.cjs'
+      - 'tests/test_clipboard_p2p_backpressure.py'
+      - '.github/workflows/bidirectional_clipboard_tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-behavior:
+    name: JS syntax and actual outbound function behavior
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse full service script
+        run: node --check ClipCascade_Mobile/src/StartForegroundService.js
+      - name: Run transfer and native-bridge regression tests
+        run: node --test tests/test_android_clipboard_transport.cjs
+
+  windows-p2p:
+    name: Windows P2P regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest pillow
+      - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py
+
+  android-native:
+    name: Compile real Android Kotlin modules
+    needs: android-behavior
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: android-actions/setup-android@v3
+      - name: Install locked dependencies
+        working-directory: ClipCascade_Mobile/src
+        run: npm ci --no-audit --no-fund
+      - name: Compile native Android bridge and clipboard listeners
+        working-directory: ClipCascade_Mobile/src/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace
