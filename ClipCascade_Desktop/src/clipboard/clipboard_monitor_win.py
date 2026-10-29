@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 import ctypes
+from ctypes import wintypes
 
 import win32api
 import win32con
@@ -25,6 +26,9 @@ _own_image_sequence = None  # sequence number of an image written by ClipCascade
 _state_lock = threading.Lock()
 _changed = threading.Event()
 _stopping = threading.Event()
+_listener_ready = threading.Event()
+_listener_failure = None
+_class_registered = False
 
 # Clipboard screenshots may be published as DIB/DIBV5 or a registered image
 # format instead of CF_BITMAP. Inspect the content rather than just one format.
@@ -151,59 +155,109 @@ def _process_message(hwnd, msg, wparam, lparam, enable_image_monitoring=False, e
 
 
 def _create_window(images=False, files=False):
-    global _hwnd
-    class_name = "ClipboardHook"
+    """Create a real, hidden Win32 window to receive WM_CLIPBOARDUPDATE.
+
+    win32gui.CreateWindow REQUIRES 11 arguments: class, title, style,
+    x, y, width, height, parent, menu, hInstance, reserved. The old
+    preview provided only nine, so the listener never started.
+    """
+    global _hwnd, _class_registered
+    class_name = "ClipCascadeClipboardHook"
     wc = win32gui.WNDCLASS()
     wc.lpfnWndProc = lambda hwnd, msg, wparam, lparam: _process_message(
         hwnd, msg, wparam, lparam, images, files
     )
     wc.lpszClassName = class_name
     wc.hInstance = win32api.GetModuleHandle(None)
-    atom = win32gui.RegisterClass(wc)
-    _hwnd = win32gui.CreateWindow(atom, class_name, 0, 0, 0, 0, 0, wc.hInstance, None)
+    win32gui.RegisterClass(wc)
+    _class_registered = True
+    _hwnd = win32gui.CreateWindow(
+        class_name, class_name,
+        0,                      # hidden top-level window: no visual changes
+        0, 0, 0, 0,            # x, y, width, height
+        0, 0,                  # parent, menu
+        wc.hInstance, None,    # module handle, reserved
+    )
+    if not _hwnd:
+        raise RuntimeError("Win32 clipboard window returned an empty handle")
+
+
+def _set_clipboard_listener(hwnd, add=True):
+    """Win32 HWND is pointer-sized; declare ctypes types explicitly on x64."""
+    api = ctypes.windll.user32
+    fn = api.AddClipboardFormatListener if add else api.RemoveClipboardFormatListener
+    fn.argtypes = [wintypes.HWND]
+    fn.restype = wintypes.BOOL
+    if not fn(hwnd):
+        raise ctypes.WinError()
 
 
 def _runner(images=False, files=False):
-    global _hwnd
+    global _hwnd, _class_registered, _listener_failure
     listener_added = False
     try:
         _create_window(images, files)
-        import ctypes
-        if not ctypes.windll.user32.AddClipboardFormatListener(_hwnd):
-            raise OSError("AddClipboardFormatListener failed")
+        _set_clipboard_listener(_hwnd, add=True)
         listener_added = True
+        logging.info("Windows clipboard listener ready (HWND=%s)", _hwnd)
+        _listener_ready.set()
         win32gui.PumpMessages()
-    except Exception:
+    except Exception as exc:
+        _listener_failure = exc
         logging.exception("Windows clipboard listener failed")
+        _stopping.set()
+        _changed.set()
+        _listener_ready.set()
     finally:
-        if _hwnd:
-            try:
-                if listener_added:
-                    import ctypes
-                    ctypes.windll.user32.RemoveClipboardFormatListener(_hwnd)
+        # Always unregister even when window construction failed halfway.
+        try:
+            if _hwnd and listener_added:
+                _set_clipboard_listener(_hwnd, add=False)
+        except Exception:
+            logging.exception("Failed to remove clipboard listener")
+        try:
+            if _hwnd:
                 win32gui.DestroyWindow(_hwnd)
-                win32gui.UnregisterClass("ClipboardHook", win32api.GetModuleHandle(None))
-            except Exception:
-                logging.exception("Windows clipboard listener cleanup failed")
-        _hwnd = None
+        except Exception:
+            logging.exception("Failed to destroy clipboard listener window")
+        try:
+            if _class_registered:
+                win32gui.UnregisterClass("ClipCascadeClipboardHook", win32api.GetModuleHandle(None))
+        except Exception:
+            logging.exception("Failed to unregister clipboard window class")
+        finally:
+            _hwnd = None
+            _class_registered = False
+            _listener_ready.set()
 
 
 def _start(enable_image_monitoring=False, enable_file_monitoring=False):
-    global _clipboard_thread, _worker_thread
+    global _clipboard_thread, _worker_thread, _listener_failure
     if _clipboard_thread and _clipboard_thread.is_alive():
         return
     _changed.clear()
     _stopping.clear()
-    _worker_thread = threading.Thread(
-        target=_worker, args=(enable_image_monitoring, enable_file_monitoring),
-        name="ClipCascadeClipboardReader", daemon=True
-    )
+    _listener_ready.clear()
+    _listener_failure = None
     _clipboard_thread = threading.Thread(
         target=_runner, args=(enable_image_monitoring, enable_file_monitoring),
         name="ClipCascadeClipboardEvents", daemon=True
     )
-    _worker_thread.start()
     _clipboard_thread.start()
+    # Surface listener failure instead of showing Connected while clipboard
+    # monitoring is completely nonfunctional.
+    if not _listener_ready.wait(timeout=8.0):
+        _stopping.set()
+        logging.error("Windows clipboard listener did not become ready")
+        raise RuntimeError("Windows clipboard listener startup timed out")
+    if _listener_failure is not None or _stopping.is_set():
+        raise RuntimeError("Windows clipboard listener startup failed") from _listener_failure
+
+    _worker_thread = threading.Thread(
+        target=_worker, args=(enable_image_monitoring, enable_file_monitoring),
+        name="ClipCascadeClipboardReader", daemon=True
+    )
+    _worker_thread.start()
 
 
 def stop():
