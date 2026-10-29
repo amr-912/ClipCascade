@@ -175,7 +175,7 @@ class NativeBridgeModule(reactContext: ReactApplicationContext) : ReactContextBa
             val imageUri: Uri = FileProvider.getUriForFile(reactApplicationContext, authority, cacheFile)
 
             // Copy the URI to clipboard
-            val clipData = ClipData.newUri(reactApplicationContext.contentResolver, "Image", imageUri)
+            val clipData = ClipData.newUri(reactApplicationContext.contentResolver, CLIPCASCADE_REMOTE_IMAGE_LABEL, imageUri)
             val clipboard = reactApplicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(clipData)
 
