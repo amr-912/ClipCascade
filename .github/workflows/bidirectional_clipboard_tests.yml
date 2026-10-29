@@ -63,7 +63,12 @@ jobs:
           test -d "$ANDROID_HOME/platforms"
           echo "Using preinstalled SDK at $ANDROID_HOME"
       - name: Materialize upstream tracked Gradle CI defaults (without signing secrets)
-        run: cp ClipCascade_Mobile/src/android/gradle.properties.ci ClipCascade_Mobile/src/android/gradle.properties
+        run: |
+          cp ClipCascade_Mobile/src/android/gradle.properties.ci ClipCascade_Mobile/src/android/gradle.properties
+          # Production signing inputs are intentionally blank in the public
+          # template. Remove them for debug/preview builds so Gradle does not
+          # try to interpret an empty keystore path as a File.
+          sed -i '/^MYAPP_UPLOAD_/d' ClipCascade_Mobile/src/android/gradle.properties
       - name: Install locked dependencies
         working-directory: ClipCascade_Mobile/src
         run: npm ci --no-audit --no-fund
