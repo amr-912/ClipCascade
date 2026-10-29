@@ -70,3 +70,32 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:compileDebugKotlin -PhermesEnabled=true --no-daemon --stacktrace
+      - name: Package separately installable Android preview APK
+        working-directory: ClipCascade_Mobile/src/android
+        run: ./gradlew :app:assemblePreview -PhermesEnabled=true --no-daemon
+      - name: Check preview package and create installation notes
+        run: |
+          APK=ClipCascade_Mobile/src/android/app/build/outputs/apk/preview/app-preview.apk
+          test -s "$APK"
+          mkdir -p android-preview
+          cp "$APK" android-preview/ClipCascade-Preview-Bidirectional.apk
+          cat > android-preview/README.txt <<'EOF'
+          ClipCascade Android bidirectional test build.
+          Package ID: com.clipcascade.preview (separate from official com.clipcascade).
+          Build type: preview; debug-signed for testing, not production.
+          Keep official app installed. STOP original ClipCascade before testing
+          this preview; do not run two foreground clipboard monitors together.
+          Log in to the same existing server from the preview.
+          On Android 10+, to enable background copy interception, grant the
+          preview app READ_LOGS and overlay appop with Android Debug Bridge:
+            adb -d shell pm grant com.clipcascade.preview android.permission.READ_LOGS
+            adb -d shell appops set com.clipcascade.preview SYSTEM_ALERT_WINDOW allow
+          Then force-stop the preview and start it, accepting Android log access.
+          Do not install on top of the original app or upload passwords/keys.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipCascade-Android-Bidirectional-Preview
+          path: android-preview/*
+          if-no-files-found: error
+          retention-days: 14
