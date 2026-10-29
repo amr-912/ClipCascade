@@ -4,6 +4,8 @@ package com.clipcascade
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
@@ -39,6 +41,24 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
     private var stopLogcat = false
     private var logcatThread: Thread? = null
     private var logcatProcess: Process? = null
+    private val logcatWatchdogHandler = Handler(Looper.getMainLooper())
+    private val logcatWatchdog = object : Runnable {
+        override fun run() {
+            if (!isListening) return
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P &&
+                ContextCompat.checkSelfPermission(reactApplicationContext, Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
+            ) {
+                // The OS can terminate the logcat subprocess while the app
+                // remains Connected. Without a watchdog, background copying
+                // silently becomes one-way until the app restarts.
+                if (logcatThread?.isAlive != true) {
+                    startLogcatReader()
+                }
+            }
+            logcatWatchdogHandler.postDelayed(this, 60000L)
+        }
+    }
+
     
 
     override fun getName(): String {
@@ -48,6 +68,7 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
     @ReactMethod
     fun startListening() {
         if (isListening) {
+            if (logcatThread?.isAlive != true) startLogcatReader()
             return
         }
 
@@ -94,6 +115,14 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
         }
         clipboardManager.addPrimaryClipChangedListener(listener)
         isListening = true
+
+        logcatWatchdogHandler.removeCallbacks(logcatWatchdog)
+        startLogcatReader()
+        logcatWatchdogHandler.postDelayed(logcatWatchdog, 60000L)
+    }
+
+    private fun startLogcatReader() {
+        if (!isListening || logcatThread?.isAlive == true) return
 
         // 2) Logcat monitoring
         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P &&
@@ -143,6 +172,8 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
 
     @ReactMethod
     fun stopListening() {
+        isListening = false
+        logcatWatchdogHandler.removeCallbacks(logcatWatchdog)
         // 1) Remove clipboard listener
         listener?.let {
             clipboardManager.removePrimaryClipChangedListener(it)
