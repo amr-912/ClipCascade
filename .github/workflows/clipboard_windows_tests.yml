@@ -97,7 +97,6 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force 'preview-output' | Out-Null
-          Copy-Item ClipCascade_Desktop/src/dist/ClipCascade.exe preview-output/ClipCascade-ClipboardPreview-Portable.exe
           Copy-Item ClipCascade-ClipboardPreview-3.3.3.msi preview-output/
           @'
           ClipCascade Windows clipboard preview 3.3.3 (unsigned, test build).
@@ -112,12 +111,12 @@ jobs:
           Take a screenshot using Win+Shift+S and paste into an Android app
           that supports images. Windows/Android have different image handling.
           To roll back, uninstall preview then reinstall the official release.
-          The portable EXE keeps its own DATA alongside it and will need its
-          own login; DO NOT run it simultaneously with installed ClipCascade.
           '@ | Set-Content preview-output/README-PREVIEW.txt -Encoding utf8
       - uses: actions/upload-artifact@v4
         with:
-          name: ClipCascade-Windows-Clipboard-Preview-3.3.3
-          path: preview-output/*
+          name: ClipCascade-ClipboardFix-MSI-3.3.3
+          path: |
+            preview-output/ClipCascade-ClipboardPreview-3.3.3.msi
+            preview-output/README-PREVIEW.txt
           if-no-files-found: error
           retention-days: 14
