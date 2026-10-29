@@ -159,6 +159,6 @@ test('native listeners preserve user-owned image URI events', () => {
   for (const code of [native, floating]) {
     assert.match(code, /description\.hasMimeType\("image\/\*"\) && item\.uri != null/);
     assert.match(code, /params\.putString\("type", "image"\)/);
-    assert.match(code, /description\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
+    assert.match(code, /description\??\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
   }
 });
