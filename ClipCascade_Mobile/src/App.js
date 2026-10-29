@@ -112,6 +112,7 @@ export default function App() {
   const isMountedRef = useRef(true);
   const loginInProgressRef = useRef(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [clipboardDiagnostic, setClipboardDiagnostic] = useState(null);
 
   const [newVersionAvailable, setNewVersionAvailable] = useState([false, '']);
   const [donateUrl, setDonateUrl] = useState(null);
@@ -1392,6 +1393,35 @@ export default function App() {
             {/* Display p2p status message */}
             {wsPageP2PMessage !== '' && (
               <Text style={styles.message}>{wsPageP2PMessage}</Text>
+            )}
+            {/* Explicit, local-only clipboard metadata diagnosis. No payload is displayed. */}
+            {NativeModules.ClipboardListener?.inspectCurrentClipboard && (
+              <View style={{marginTop: 12, paddingHorizontal: 8}}>
+                <TouchableOpacity
+                  style={[styles.loginButton, {backgroundColor: '#34546b'}]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Inspect clipboard metadata without sharing its content"
+                  onPress={async () => {
+                    try {
+                      const report = await NativeModules.ClipboardListener.inspectCurrentClipboard();
+                      setClipboardDiagnostic(report);
+                    } catch (e) {
+                      setClipboardDiagnostic({diagnosticError: String(e?.code || 'unavailable')});
+                    }
+                  }}>
+                  <Text style={styles.loginButtonText}>Inspect Clipboard (metadata only)</Text>
+                </TouchableOpacity>
+                <Text style={styles.label}>
+                  Capture a Samsung screenshot, return here and tap Inspect.
+                  Only MIME types, event counts, URI presence and accessibility
+                  are displayed; clipboard contents and URI strings are excluded.
+                </Text>
+                {clipboardDiagnostic != null && (
+                  <Text selectable style={styles.message}>
+                    {JSON.stringify(clipboardDiagnostic, null, 2)}
+                  </Text>
+                )}
+              </View>
             )}
             {/* File download button */}
             {enableFilesDownloadButton &&
