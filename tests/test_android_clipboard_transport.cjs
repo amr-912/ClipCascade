@@ -130,3 +130,35 @@ test('Android clipboard monitor has background logcat reader watchdog', () => {
   assert.match(native, /logcatThread\?\.isAlive != true/);
   assert.match(native, /logcatWatchdogHandler\.postDelayed\(this, 60000L\)/);
 });
+
+
+test('Android screenshot URI is sent as an IMAGE and not a downloadable file', async () => {
+  const {context, outputs} = fakeTransport();
+  context.setOpenPeer();
+  await context.sendClipBoardP2P('content://media/external/images/media/42', 'image');
+  assert.equal(outputs.length, 1);
+  assert.equal(outputs[0].type, 'image');
+  assert.equal(outputs[0].payload, 'aW1hZ2U=');
+  assert.equal(context.previous_clipboard_content_hash, 'aW1hZ2U=');
+});
+
+test('multiple local images and a subsequent text copy remain independently sendable', async () => {
+  const {context, outputs} = fakeTransport();
+  context.setOpenPeer();
+  await context.sendClipBoardP2P('content://example/image/1', 'image');
+  await context.sendClipBoardP2P('my handwritten note after screenshot', 'text');
+  assert.deepEqual(outputs.map(x => x.type), ['image', 'text']);
+  assert.equal(outputs[1].payload, 'my handwritten note after screenshot');
+});
+
+test('native listeners preserve user-owned image URI events', () => {
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
+  const floating = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardFloatingActivity.kt'), 'utf8');
+  for (const code of [native, floating]) {
+    assert.match(code, /mimeType\.startsWith\("image\/"\) && item\.uri != null/);
+    assert.match(code, /params\.putString\("type", "image"\)/);
+    assert.match(code, /description\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
+  }
+});
