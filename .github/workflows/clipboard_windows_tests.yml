@@ -27,8 +27,8 @@ jobs:
       - name: Run clipboard tests with Windows API stubs
         run: python -m pytest -q tests/test_windows_clipboard.py
 
-  windows-portable:
-    name: Build Windows portable EXE for real-device testing
+  windows-preview:
+    name: Build Windows EXE and MSI preview (3.3.2)
     runs-on: windows-latest
     needs: clipboard-unit
     steps:
@@ -36,26 +36,85 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.10'
-      - name: Install Windows package dependencies
+      - name: Assign preview version without modifying repository metadata
+        shell: pwsh
+        run: |
+          $versions = Get-Content version.json -Raw | ConvertFrom-Json
+          $versions.windows = '3.3.2'
+          $env:VERSIONS_JSON = $versions | ConvertTo-Json -Compress
+          python .github/scripts/apply_app_version.py desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Preview version injection failed' }
+      - name: Install Windows dependencies
         working-directory: ClipCascade_Desktop/src
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
           python -m pip install -r requirements_win.txt
-      - name: Build portable executable
+      - name: Build portable EXE
         working-directory: ClipCascade_Desktop/src
         run: python -m PyInstaller ClipCascade_win.spec --noconfirm --clean
-      - name: Verify EXE is present
+      - name: Verify EXE size
         shell: pwsh
         run: |
           $file = 'ClipCascade_Desktop/src/dist/ClipCascade.exe'
           if (-not (Test-Path $file)) { throw 'Portable EXE missing' }
-          $length = (Get-Item $file).Length
-          if ($length -lt 1000000) { throw 'EXE unexpectedly small' }
-          Write-Host "EXE size: $length bytes"
+          if ((Get-Item $file).Length -lt 1000000) { throw 'Unexpectedly small EXE' }
+      - name: Install WiX Toolset v3
+        shell: pwsh
+        run: |
+          choco install -y wixtoolset --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
+          $wixBin = Join-Path $env:WIX 'bin'
+          if (-not (Test-Path $wixBin)) {
+            $wixBin = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset *\bin' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          if (-not $wixBin -or -not (Test-Path $wixBin)) { throw 'WiX bin directory missing' }
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+      - name: Stage Windows installer
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'cc-preview-msi'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item ClipCascade_Desktop/src/dist/ClipCascade.exe $stage/
+          Copy-Item LICENSE $stage/
+          Copy-Item logo/logo.ico $stage/
+          Copy-Item ClipCascade_Desktop/installer/windows/readme.txt $stage/
+          python .github/scripts/generate_rtf.py LICENSE "$stage/LICENSE.rtf"
+          if ($LASTEXITCODE -ne 0) { throw 'License generation failed' }
+          "STAGE=$stage" >> $env:GITHUB_ENV
+      - name: Build MSI upgrade installer (preview 3.3.2)
+        shell: pwsh
+        run: |
+          candle.exe -arch x64 '-dProductVersion=3.3.2' "-dStagingDir=$env:STAGE" ClipCascade_Desktop/installer/windows/ClipCascade.wxs -out installer.wixobj
+          if ($LASTEXITCODE -ne 0) { throw 'WiX compilation failed' }
+          light.exe -ext WixUIExtension installer.wixobj -out ClipCascade-ClipboardPreview-3.3.2.msi
+          if ($LASTEXITCODE -ne 0) { throw 'WiX linking failed' }
+          if (-not (Test-Path 'ClipCascade-ClipboardPreview-3.3.2.msi')) { throw 'MSI missing' }
+      - name: Prepare user-facing preview files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'preview-output' | Out-Null
+          Copy-Item ClipCascade_Desktop/src/dist/ClipCascade.exe preview-output/ClipCascade-ClipboardPreview-Portable.exe
+          Copy-Item ClipCascade-ClipboardPreview-3.3.2.msi preview-output/
+          @'
+          ClipCascade Windows clipboard preview 3.3.2 (unsigned, test build).
+          This is NOT the upstream official release. Source: amr-912/ClipCascade.
+          Recommended: close ClipCascade on Windows (Quit) before MSI install.
+          Back up C:\ClipCascade\DATA locally if that file exists. Do not upload it:
+          it contains account/session configuration.
+          The MSI is an upgrade over official version 3.3.1 if the same MSI
+          upgrade identity and install scope/path are used. Verify installed
+          version before applying; do not install over a newer version.
+          Keep your Android ClipCascade version and server unchanged.
+          Take a screenshot using Win+Shift+S and paste into an Android app
+          that supports images. Windows/Android have different image handling.
+          To roll back, uninstall preview then reinstall the official release.
+          The portable EXE keeps its own DATA alongside it and will need its
+          own login; DO NOT run it simultaneously with installed ClipCascade.
+          '@ | Set-Content preview-output/README-PREVIEW.txt -Encoding utf8
       - uses: actions/upload-artifact@v4
         with:
-          name: ClipCascade-Windows-Clipboard-Preview-EXE
-          path: ClipCascade_Desktop/src/dist/ClipCascade.exe
+          name: ClipCascade-Windows-Clipboard-Preview-3.3.2
+          path: preview-output/*
           if-no-files-found: error
           retention-days: 14
