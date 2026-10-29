@@ -74,7 +74,7 @@ class ClipboardFloatingActivity : AppCompatActivity() {
         if (clip != null && clip.itemCount > 0) {
 
             val description = clip.description
-            if (description == null) {
+            if (description == null || description.label?.toString() == CLIPCASCADE_REMOTE_IMAGE_LABEL) {
                 return
             }
 
