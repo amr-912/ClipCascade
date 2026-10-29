@@ -85,6 +85,11 @@ android {
         versionCode 30300
         versionName "3.3.0"
     }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
     signingConfigs {
         debug {
             storeFile file('debug.keystore')
@@ -140,6 +145,10 @@ dependencies {
 
     // Guava
     implementation "com.google.guava:guava:33.4.8-android"
+
+    // Exercise real ClipboardManager/ClipData MIME behavior on the JVM.
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.17"
 
     // WorkManager
     implementation "androidx.work:work-runtime-ktx:2.10.3"
