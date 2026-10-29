@@ -157,7 +157,7 @@ test('native listeners preserve user-owned image URI events', () => {
   const floating = fs.readFileSync(path.join(root,
     'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardFloatingActivity.kt'), 'utf8');
   for (const code of [native, floating]) {
-    assert.match(code, /mimeType\.startsWith\("image\/"\) && item\.uri != null/);
+    assert.match(code, /description\.hasMimeType\("image\/\*"\) && item\.uri != null/);
     assert.match(code, /params\.putString\("type", "image"\)/);
     assert.match(code, /description\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
   }
