@@ -156,3 +156,28 @@ def test_new_screenshot_never_consumes_stale_remote_image_marker(monitor):
     monitor._deliver_clipboard("image", Image.new("RGB", (2, 2)), True, True, sequence=57)
     assert delivered == ["image"]
     assert monitor._own_image_sequence is None
+
+
+
+def test_win32_window_construction_has_required_eleven_arguments(monitor):
+    monitor._create_window()
+    args = monitor.win32gui.CreateWindow.call_args.args
+    assert len(args) == 11, "Real win32gui.CreateWindow requires exactly 11 positional arguments"
+    assert args[0] == "ClipCascadeClipboardHook"
+    assert args[7] == 0  # parent
+    assert args[8] == 0  # menu
+    assert args[10] is None
+
+
+def test_failed_listener_startup_is_reported_not_silent(monitor, monkeypatch):
+    import pytest
+
+    def simulated_failure(*args):
+        monitor._listener_failure = TypeError("CreateWindow() takes 11 arguments")
+        monitor._stopping.set()
+        monitor._listener_ready.set()
+
+    monkeypatch.setattr(monitor, "_runner", simulated_failure)
+    with pytest.raises(RuntimeError, match="listener startup failed"):
+        monitor._start(True, True)
+    monitor.stop()
