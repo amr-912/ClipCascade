@@ -1105,9 +1105,9 @@ module.exports = async (inputData = null) => {
                 return;
               }
 
-              await clearFiles((expensiveCall = true));
-              await resetSendingFragmentId();
-
+              await clearFiles(true);
+              // Incoming transfer must not cancel an unrelated outbound
+              // clipboard operation (simultaneous bidirectional copying).
               let cb = String(message.payload);
               const type_ = message.type ?? 'text';
               const metadata = message.metadata;
