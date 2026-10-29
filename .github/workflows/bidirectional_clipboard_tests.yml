@@ -62,6 +62,8 @@ jobs:
           test -n "$ANDROID_HOME"
           test -d "$ANDROID_HOME/platforms"
           echo "Using preinstalled SDK at $ANDROID_HOME"
+      - name: Materialize upstream tracked Gradle CI defaults (without signing secrets)
+        run: cp ClipCascade_Mobile/src/android/gradle.properties.ci ClipCascade_Mobile/src/android/gradle.properties
       - name: Install locked dependencies
         working-directory: ClipCascade_Mobile/src
         run: npm ci --no-audit --no-fund
