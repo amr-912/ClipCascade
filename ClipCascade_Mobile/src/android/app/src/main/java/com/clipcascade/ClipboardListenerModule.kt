@@ -31,16 +31,16 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
     private var clipboardManager: ClipboardManager =
         reactContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private var listener: ClipboardManager.OnPrimaryClipChangedListener? = null
-    private var isListening = false
+    @Volatile private var isListening = false
     private var lastEmittedTime: Long = 0 // for clipboard listener debounce
     private var lastActivityStartTime: Long = 0 // for log cat monitoring  debounce
     private val debounceTime: Long = 0 // milliseconds (increase to debounce clipboard listener)
     private val activityDebounceTime: Long = 1000 // milliseconds (increase to debounce log cat monitoring)
 
     // logcat‐reader control
-    private var stopLogcat = false
-    private var logcatThread: Thread? = null
-    private var logcatProcess: Process? = null
+    @Volatile private var stopLogcat = false
+    @Volatile private var logcatThread: Thread? = null
+    @Volatile private var logcatProcess: Process? = null
     private val logcatWatchdogHandler = Handler(Looper.getMainLooper())
     private val logcatWatchdog = object : Runnable {
         override fun run() {
