@@ -151,14 +151,43 @@ test('multiple local images and a subsequent text copy remain independently send
   assert.equal(outputs[1].payload, 'my handwritten note after screenshot');
 });
 
-test('native listeners preserve user-owned image URI events', () => {
-  const native = fs.readFileSync(path.join(root,
+test('Android clipboard selection prefers an image URI over text/plain in mixed MIME', () => {
+  const helper = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardContentSelector.kt'), 'utf8');
+  const listener = fs.readFileSync(path.join(root,
     'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
   const floating = fs.readFileSync(path.join(root,
     'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardFloatingActivity.kt'), 'utf8');
-  for (const code of [native, floating]) {
-    assert.match(code, /description\.hasMimeType\("image\/\*"\) && item\.uri != null/);
-    assert.match(code, /params\.putString\("type", "image"\)/);
-    assert.match(code, /description\??\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
+
+  // Both clipboard event sources use the same selector; image URI is checked
+  // before text even if image/* is the second MIME type or item.
+  for (const code of [listener, floating]) {
+    assert.match(code, /selectClipboardPayload\(it,/);
+    assert.match(code, /CLIPCASCADE_REMOTE_IMAGE_LABEL/);
   }
+  assert.match(helper, /description\?\.hasMimeType\("image\/\*"\)/);
+  assert.match(helper, /resolver\.getType\(uri\)/);
+  assert.ok(helper.indexOf('ClipboardPayload(uri.toString(), "image")') <
+            helper.indexOf('ClipboardPayload(text.toString(), "text")'));
+  assert.match(helper, /0 until clip\.itemCount/g);
+  assert.match(helper, /ClipboardPayload\(uri\.toString\(\), "files"\)/);
+});
+
+test('Android diagnostics are user-triggered and never expose payload or URI', () => {
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
+  const app = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/App.js'), 'utf8');
+  const start = native.indexOf('fun inspectCurrentClipboard(promise: Promise)');
+  const end = native.indexOf('@ReactMethod', start + 1);
+  assert.ok(start > 0);
+  const diagnostic = native.slice(start, end);
+  assert.match(diagnostic, /observedEvents/);
+  assert.match(diagnostic, /mimeTypes/);
+  assert.match(diagnostic, /imageReadable/);
+  assert.match(diagnostic, /primaryClipAccessible/);
+  assert.doesNotMatch(diagnostic, /putString\("content"/);
+  assert.doesNotMatch(diagnostic, /putString\("uri"/);
+  assert.match(app, /onPress=\{async \(\) => \{/);
+  assert.match(app, /ClipboardListener\.inspectCurrentClipboard\(\)/);
 });
