@@ -69,4 +69,4 @@ jobs:
         working-directory: ClipCascade_Mobile/src/android
         run: |
           chmod +x gradlew
-          ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace
+          ./gradlew :app:compileDebugKotlin -PhermesEnabled=true --no-daemon --stacktrace
