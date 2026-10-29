@@ -5,7 +5,7 @@ import android.content.ContentResolver
 
 /**
  * Interpret the system clipboard without coercing image URIs into text.
- * Samsung/other providers may advertise text/plain before image/*, or expose
+ * Samsung/other providers may advertise text/plain before an image MIME, or expose
  * the image URI in a later ClipData.Item. No private keyboard history is read.
  */
 internal data class ClipboardPayload(val content: String, val type: String)
