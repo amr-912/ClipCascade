@@ -105,6 +105,15 @@ android {
         debug {
             signingConfig signingConfigs.debug
         }
+        // Standalone test build: never replaces the official signed app.
+        // Only suitable for device validation; not for production distribution.
+        preview {
+            initWith release
+            applicationIdSuffix ".preview"
+            versionNameSuffix "-preview"
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
+        }
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
