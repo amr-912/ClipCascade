@@ -26,3 +26,36 @@ jobs:
       - run: python -m pip install pytest pillow
       - name: Run clipboard tests with Windows API stubs
         run: python -m pytest -q tests/test_windows_clipboard.py
+
+  windows-portable:
+    name: Build Windows portable EXE for real-device testing
+    runs-on: windows-latest
+    needs: clipboard-unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - name: Install Windows package dependencies
+        working-directory: ClipCascade_Desktop/src
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r requirements_win.txt
+      - name: Build portable executable
+        working-directory: ClipCascade_Desktop/src
+        run: python -m PyInstaller ClipCascade_win.spec --noconfirm --clean
+      - name: Verify EXE is present
+        shell: pwsh
+        run: |
+          $file = 'ClipCascade_Desktop/src/dist/ClipCascade.exe'
+          if (-not (Test-Path $file)) { throw 'Portable EXE missing' }
+          $length = (Get-Item $file).Length
+          if ($length -lt 1000000) { throw 'EXE unexpectedly small' }
+          Write-Host "EXE size: $length bytes"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipCascade-Windows-Clipboard-Preview-EXE
+          path: ClipCascade_Desktop/src/dist/ClipCascade.exe
+          if-no-files-found: error
+          retention-days: 14
