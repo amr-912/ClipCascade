@@ -67,6 +67,10 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
         return "ClipboardListener"
     }
 
+    override fun getConstants(): MutableMap<String, Any> =
+        mutableMapOf("applicationId" to BuildConfig.APPLICATION_ID)
+
+
     @ReactMethod
     fun startListening() {
         if (isListening) {
