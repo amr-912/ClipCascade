@@ -1,5 +1,6 @@
 package com.clipcascade
 
+import android.app.Application
 import android.content.ClipData
 import android.content.ClipDescription
 import android.net.Uri
@@ -16,7 +17,7 @@ import org.robolectric.annotation.Config
  * patterns. Real Samsung Keyboard behavior must still be tested on hardware.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33, 35])
+@Config(sdk = [33, 35], application = Application::class)
 class ClipboardContentSelectorTest {
     private val resolver get() = RuntimeEnvironment.getApplication().contentResolver
 
