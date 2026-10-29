@@ -21,7 +21,7 @@ def get_sender():
     names = {"_send", "_send_chunk_with_backpressure"}
     methods = [n for n in original.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
     assert {n.name for n in methods} == names
-    methods.append(ast.FunctionDef(name="fragment_string", args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="payload")], vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]), body=[ast.Return(value=ast.List(elts=[ast.Name(id="payload", ctx=ast.Load())],ctx=ast.Load()))], decorator_list=[ast.Name(id="staticmethod", ctx=ast.Load())]))
+    methods.append(ast.parse("@staticmethod\ndef fragment_string(payload):\n    return [payload]").body[0])
     isolated = ast.Module(body=[ast.ClassDef(name="P2PManager", bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
     ast.fix_missing_locations(isolated)
     env = {"json": json, "time": time, "asyncio": asyncio, "uuid": uuid, "logging": logging}
