@@ -789,7 +789,7 @@ class P2PManager(ReconnectMixin, WSInterface):
 
     async def _send(self, payload: str, payload_type: str = "text"):
         original_payload = payload
-        previous_hash = self.clipboard_manager.previous_clipboard_hash
+        previous_hash = None
         sent_hash = None
         try:
             channels = [
@@ -802,6 +802,7 @@ class P2PManager(ReconnectMixin, WSInterface):
                 logging.warning("Clipboard outbound %s deferred: no open P2P data channel", payload_type)
                 return  # Do not record payload hash as delivered.
 
+            previous_hash = self.clipboard_manager.previous_clipboard_hash
             if not self.clipboard_manager.has_clipboard_changed(payload):
                 return
             sent_hash = self.clipboard_manager.previous_clipboard_hash
@@ -860,6 +861,9 @@ class P2PManager(ReconnectMixin, WSInterface):
                     )
             # These chunks have been queued, not acknowledged by the receiver.
             logging.info("P2P outbound %s queued all %d fragments", payload_type, len(fragments))
+            if (self._pending_outbound_clipboard is not None and
+                    self._pending_outbound_clipboard[0] == original_payload):
+                self._pending_outbound_clipboard = None
             self.reset_sending_fragment_id()
         except Exception as e:
             self._remember_pending_clipboard(original_payload, payload_type)
