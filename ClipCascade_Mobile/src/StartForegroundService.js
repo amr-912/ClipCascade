@@ -58,7 +58,6 @@ module.exports = async (inputData = null) => {
 
         let previous_clipboard_content_hash = '';
         let toggle = false; // p2s toggle
-        let block_image_once = false;
         let files_in_memory = null;
         let websocket_status_notification_toggle = false;
         let p2pMsg = null; // p2p status message
@@ -447,7 +446,6 @@ module.exports = async (inputData = null) => {
                           await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(
                             cb,
                           );
-                          block_image_once = true;
                         } else if (type_ === 'files') {
                           await showFilesDownloadNotification(
                             '📥 Download File(s)',
@@ -484,25 +482,21 @@ module.exports = async (inputData = null) => {
               }
             },
             onDisconnect: async () => {
-              block_image_once = false;
               await setDataInAsyncStorage('wsStatusMessage', 'Disconnected');
             },
             onStompError: async frame => {
-              block_image_once = false;
               await setDataInAsyncStorage(
                 'wsStatusMessage',
                 '❌ STOMP Error: ' + JSON.stringify(frame, null, 2),
               );
             },
             onWebSocketError: async event => {
-              block_image_once = false;
               await setDataInAsyncStorage(
                 'wsStatusMessage',
                 '❌ WebSocket Error: ' + JSON.stringify(event, null, 2),
               );
             },
             onWebSocketClose: async event => {
-              block_image_once = false;
               const reason = event?.reason || 'closed by client';
               await setDataInAsyncStorage(
                 'wsStatusMessage',
@@ -563,9 +557,7 @@ module.exports = async (inputData = null) => {
                   if (await newCB(hcb)) {
                     previous_clipboard_content_hash = hcb;
 
-                    if (block_image_once) {
-                      block_image_once = false;
-                    } else {
+                    
                       toggle = true;
 
                       if (cipher_enabled === 'true') {
@@ -586,13 +578,12 @@ module.exports = async (inputData = null) => {
                           type: type_,
                         }),
                       });
-                    }
+                    
                   }
                 }
               }
             } catch (e) {
               toggle = false;
-              block_image_once = false;
               throw e;
             }
           };
@@ -856,7 +847,6 @@ module.exports = async (inputData = null) => {
               };
 
               wsSignalingClient.onerror = async event => {
-                block_image_once = false;
                 await setDataInAsyncStorage(
                   'wsStatusMessage',
                   '❌ WebSocket Error: ' + JSON.stringify(event, null, 2),
@@ -864,7 +854,6 @@ module.exports = async (inputData = null) => {
               };
 
               wsSignalingClient.onclose = async event => {
-                block_image_once = false;
                 const reason = event?.reason || 'closed by client';
                 await setDataInAsyncStorage(
                   'wsStatusMessage',
@@ -933,9 +922,7 @@ module.exports = async (inputData = null) => {
                 if (await newCB(hcb)) {
                   previous_clipboard_content_hash = hcb;
 
-                  if (block_image_once) {
-                    block_image_once = false;
-                  } else {
+                  
                     await resetSendingFragmentId();
                     await resetReceivingFragments();
 
@@ -996,11 +983,10 @@ module.exports = async (inputData = null) => {
                     if (!loopBroken) {
                       await resetSendingFragmentId();
                     }
-                  }
+                  
                 }
               }
             } catch (e) {
-              block_image_once = false;
               p2pMsg = '❌ P2P Outbound Error: ' + JSON.stringify(e, null, 2);
               await p2pStatusMessageChanged();
             }
@@ -1162,7 +1148,6 @@ module.exports = async (inputData = null) => {
                     await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(
                       cb,
                     );
-                    block_image_once = true;
                   } else if (type_ === 'files') {
                     await showFilesDownloadNotification('📥 Download File(s)');
 
