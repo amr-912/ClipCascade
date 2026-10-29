@@ -20,6 +20,8 @@ import java.io.InputStreamReader
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import com.facebook.react.bridge.Promise
 
 
 // Exact label of images ClipCascade writes from a remote device. This marker
@@ -74,43 +76,22 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
 
         // 1) Clipboard listener
         listener = ClipboardManager.OnPrimaryClipChangedListener {
-            val clip = clipboardManager.primaryClip
-            if (clip != null && clip.itemCount > 0) {
-
-                val description = clip.description
-                // This image was written by our own receive path, not copied
-                // by the user. Filter the *specific event*, rather than
-                // suppressing an unrelated future clipboard change.
-                if (description?.label?.toString() == CLIPCASCADE_REMOTE_IMAGE_LABEL) {
-                    return@OnPrimaryClipChangedListener
-                }
-                if (description != null) { 
-
-                    val mimeType = description.getMimeType(0)
-                    if (mimeType != null) {
-                        
-                        val item = clip.getItemAt(0)
-                        val params: WritableMap = Arguments.createMap()
-                        
-                        if (mimeType.startsWith("text/") && item.text != null) {
-                            // Text
-                            params.putString("content", item.text.toString())
-                            params.putString("type", "text")
-                        }
-                        else if (description.hasMimeType("image/*") && item.uri != null) {
-                            // Image
-                            params.putString("content", item.uri.toString())
-                            params.putString("type", "image")
-                        }
-                        else if (item.uri != null) {
-                            // Files
-                            params.putString("content", item.uri.toString())
-                            params.putString("type", "files")
-                        }
-
-                        sendEventToJS(params)
-                    }
-                }
+            val clip = try { clipboardManager.primaryClip } catch (_: Exception) { null }
+            val description = clip?.description
+            if (description?.label?.toString() == CLIPCASCADE_REMOTE_IMAGE_LABEL) {
+                recordClipboardEvent("listener", "remote-image", description)
+                return@OnPrimaryClipChangedListener
+            }
+            val payload = clip?.let {
+                try { selectClipboardPayload(it, reactApplicationContext.contentResolver) }
+                catch (_: Exception) { null }
+            }
+            recordClipboardEvent("listener", payload?.type ?: "unavailable", description)
+            if (payload != null) {
+                val params = Arguments.createMap()
+                params.putString("content", payload.content)
+                params.putString("type", payload.type)
+                sendEventToJS(params)
             }
         }
         clipboardManager.addPrimaryClipChangedListener(listener)
@@ -202,6 +183,79 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
                 .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                 .emit("onClipboardChange", params)
         }
+    }
+
+    // In-memory *metadata* only. Never retain clipboard text, URI, label,
+    // image bytes, passwords or plaintext logs in diagnostics.
+    companion object {
+        private val observedEvents = AtomicInteger(0)
+        @Volatile private var lastEventSource = "none"
+        @Volatile private var lastEventType = "none"
+        @Volatile private var lastEventMimeTypes = "none"
+
+        internal fun recordClipboardEvent(source: String, kind: String, description: android.content.ClipDescription?) {
+            observedEvents.incrementAndGet()
+            lastEventSource = source
+            lastEventType = kind
+            lastEventMimeTypes = if (description == null) "none" else
+                (0 until description.mimeTypeCount).joinToString(",") { description.getMimeType(it) }
+        }
+    }
+
+    /**
+     * User-initiated, on-device diagnosis. Read one byte at most from the
+     * current image URI; return only booleans and MIME types to React Native.
+     * Works when Android permits this app to access the system clipboard.
+     */
+    @ReactMethod
+    fun inspectCurrentClipboard(promise: Promise) {
+        Thread {
+            val report = Arguments.createMap()
+            report.putBoolean("monitorActive", isListening)
+            report.putInt("observedEvents", observedEvents.get())
+            report.putString("lastEventSource", lastEventSource)
+            report.putString("lastEventType", lastEventType)
+            report.putString("lastEventMimeTypes", lastEventMimeTypes)
+            try {
+                val clip = clipboardManager.primaryClip
+                report.putBoolean("primaryClipAccessible", clip != null)
+                report.putInt("itemCount", clip?.itemCount ?: 0)
+                val description = clip?.description
+                val mimes = Arguments.createArray()
+                if (description != null) {
+                    for (i in 0 until description.mimeTypeCount) {
+                        mimes.pushString(description.getMimeType(i))
+                    }
+                }
+                report.putArray("mimeTypes", mimes)
+                var hasUri = false
+                if (clip != null) {
+                    for (i in 0 until clip.itemCount) {
+                        if (clip.getItemAt(i).uri != null) hasUri = true
+                    }
+                }
+                report.putBoolean("hasUri", hasUri)
+                val payload = clip?.let {
+                    selectClipboardPayload(it, reactApplicationContext.contentResolver)
+                }
+                report.putString("detectedType", payload?.type ?: "none")
+                var imageReadable = "not-tested"
+                if (payload?.type == "image") {
+                    imageReadable = try {
+                        val uri = android.net.Uri.parse(payload.content)
+                        reactApplicationContext.contentResolver.openInputStream(uri)?.use { stream ->
+                            // Only probe availability; do not read or log the image.
+                            stream.read()
+                            "yes"
+                        } ?: "no"
+                    } catch (_: Exception) { "no" }
+                }
+                report.putString("imageReadable", imageReadable)
+            } catch (e: Exception) {
+                report.putString("accessErrorType", e.javaClass.simpleName)
+            }
+            promise.resolve(report)
+        }.start()
     }
 
     @ReactMethod
