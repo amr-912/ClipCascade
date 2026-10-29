@@ -189,6 +189,8 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
     // image bytes, passwords or plaintext logs in diagnostics.
     companion object {
         private val observedEvents = AtomicInteger(0)
+        private val transportEvents = AtomicInteger(0)
+        @Volatile private var lastTransportStage = "none"
         @Volatile private var lastEventSource = "none"
         @Volatile private var lastEventType = "none"
         @Volatile private var lastEventMimeTypes = "none"
@@ -199,6 +201,20 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
             lastEventType = kind
             lastEventMimeTypes = if (description == null) "none" else
                 (0 until description.mimeTypeCount).joinToString(",") { description.getMimeType(it) }
+        }
+    }
+
+    @ReactMethod
+    fun recordTransportStage(stage: String) {
+        // Explicit whitelist, so JS cannot accidentally record payload or URI.
+        if (stage in setOf(
+                "js-image", "js-text", "js-files",
+                "p2p-image-pending", "p2p-text-pending", "p2p-files-pending",
+                "p2p-image-queued", "p2p-text-queued", "p2p-files-queued",
+                "p2p-image-error", "p2p-text-error", "p2p-files-error"
+            )) {
+            lastTransportStage = stage
+            transportEvents.incrementAndGet()
         }
     }
 
@@ -213,6 +229,8 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
             val report = Arguments.createMap()
             report.putBoolean("monitorActive", isListening)
             report.putInt("observedEvents", observedEvents.get())
+            report.putInt("transportEvents", transportEvents.get())
+            report.putString("lastTransportStage", lastTransportStage)
             report.putString("lastEventSource", lastEventSource)
             report.putString("lastEventType", lastEventType)
             report.putString("lastEventMimeTypes", lastEventMimeTypes)
