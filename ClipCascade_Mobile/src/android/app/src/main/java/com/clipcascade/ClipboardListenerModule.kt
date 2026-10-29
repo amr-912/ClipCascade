@@ -97,7 +97,7 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
                             params.putString("content", item.text.toString())
                             params.putString("type", "text")
                         }
-                        else if (mimeType.startsWith("image/") && item.uri != null) {
+                        else if (description.hasMimeType("image/*") && item.uri != null) {
                             // Image
                             params.putString("content", item.uri.toString())
                             params.putString("type", "image")
