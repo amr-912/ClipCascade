@@ -8,6 +8,7 @@ happens on a worker thread. Compatible with the upstream on_update/stop API.
 import logging
 import threading
 import time
+import ctypes
 
 import win32api
 import win32con
@@ -20,6 +21,7 @@ _worker_thread = None
 _hwnd = None
 _callback_update = None
 _block_image_once = False
+_own_image_sequence = None  # sequence number of an image written by ClipCascade
 _state_lock = threading.Lock()
 _changed = threading.Event()
 _stopping = threading.Event()
@@ -29,6 +31,15 @@ _stopping = threading.Event()
 _RETRIES = 6
 _RETRY_DELAY = 0.075
 _SETTLE_DELAY = 0.065
+
+
+def _clipboard_sequence():
+    """Win32 sequence number changes on each clipboard write, including screenshots."""
+    try:
+        value = ctypes.windll.user32.GetClipboardSequenceNumber()
+        return int(value) if value else None
+    except (AttributeError, OSError):
+        return None
 
 
 def _get_clipboard_content(enable_image_monitoring=False, enable_file_monitoring=False):
@@ -50,6 +61,11 @@ def _get_clipboard_content(enable_image_monitoring=False, enable_file_monitoring
         # Pillow decodes actual Windows bitmap/DIB clipboard images, and may
         # return a list of file paths when the clipboard contains CF_HDROP.
         grabbed = ImageGrab.grabclipboard()
+        if grabbed is None and any(
+            win32clipboard.IsClipboardFormatAvailable(fmt)
+            for fmt in (win32con.CF_BITMAP, win32con.CF_DIB, getattr(win32con, "CF_DIBV5", 17))
+        ):
+            logging.warning("Clipboard has Windows bitmap data but Pillow could not decode it")
         if isinstance(grabbed, Image.Image):
             grabbed.load()  # detach from clipboard owner before returning
             return "image", grabbed
@@ -82,17 +98,25 @@ def _read_with_retries(images, files):
     return None, None
 
 
-def _deliver_clipboard(kind, payload, images, files):
-    global _block_image_once
+def _deliver_clipboard(kind, payload, images, files, sequence=None):
+    global _block_image_once, _own_image_sequence
     if kind is None or payload is None:
         return
     if kind == "image":
         if not images:
             return
         with _state_lock:
-            suppress = _block_image_once
-            _block_image_once = False
+            if _own_image_sequence is not None:
+                suppress = sequence == _own_image_sequence
+                # A new user screenshot has a NEW sequence number: never
+                # discard it just because an old remote-image marker remains.
+                _own_image_sequence = None
+                _block_image_once = False
+            else:
+                suppress = _block_image_once
+                _block_image_once = False
         if suppress:
+            logging.info("Skipped ClipCascade-owned clipboard image echo")
             return
     elif kind == "files" and not files:
         return
@@ -115,7 +139,7 @@ def _worker(images, files):
         # One copy can emit several clipboard-format update notifications.
         time.sleep(_SETTLE_DELAY)
         kind, payload = _read_with_retries(images, files)
-        _deliver_clipboard(kind, payload, images, files)
+        _deliver_clipboard(kind, payload, images, files, sequence=_clipboard_sequence())
 
 
 def _process_message(hwnd, msg, wparam, lparam, enable_image_monitoring=False, enable_file_monitoring=False):
@@ -183,7 +207,7 @@ def _start(enable_image_monitoring=False, enable_file_monitoring=False):
 
 
 def stop():
-    global _clipboard_thread, _worker_thread, _callback_update, _block_image_once
+    global _clipboard_thread, _worker_thread, _callback_update, _block_image_once, _own_image_sequence
     _stopping.set()
     _changed.set()
     if _hwnd:
@@ -200,6 +224,7 @@ def stop():
     _callback_update = None
     with _state_lock:
         _block_image_once = False
+        _own_image_sequence = None
     logging.info("Clipboard monitor stopped")
 
 
@@ -218,3 +243,11 @@ def on_update(callback, enable_image_monitoring=False, enable_file_monitoring=Fa
     global _callback_update
     _callback_update = callback
     _start(enable_image_monitoring, enable_file_monitoring)
+
+def mark_own_image_written():
+    """Tag the exact clipboard version written by ClipCascade after SetClipboardData."""
+    global _block_image_once, _own_image_sequence
+    seq = _clipboard_sequence()
+    with _state_lock:
+        _own_image_sequence = seq
+        _block_image_once = seq is None  # fallback on systems without sequence support
