@@ -38,7 +38,7 @@ def test_windows_dib_screenshot_is_encoded_as_full_png_file():
         assert clipboard_image.format == "DIB"
         encoded = mgr.convert_image_to_base64(clipboard_image)
         result = base64.b64decode(encoded)
-        assert result.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+        assert result[:8] == bytes.fromhex("89504e470d0a1a0a")
         assert mgr.get_image_size(clipboard_image) == len(result)
         with Image.open(io.BytesIO(result)) as decoded:
             assert decoded.format == "PNG"
