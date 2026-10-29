@@ -645,6 +645,7 @@ module.exports = async (inputData = null) => {
           let p2pShuttingDown = false;
           const peerOpChains = {};
           const dataChannelHeartbeatTimers = {};
+          const peerDisconnectGraceTimers = {};
           const P2P_DC_KEEPALIVE_JSON = JSON.stringify({ _cc_keepalive: true });
           // Only the latest copy is retained in RAM when signaling is up but
           // the actual data channel is not ready. Never persist clipboard data.
@@ -765,6 +766,10 @@ module.exports = async (inputData = null) => {
               for (const id of Object.keys(dataChannelHeartbeatTimers)) {
                 clearInterval(dataChannelHeartbeatTimers[id]);
                 delete dataChannelHeartbeatTimers[id];
+              }
+              for (const id of Object.keys(peerDisconnectGraceTimers)) {
+                clearTimeout(peerDisconnectGraceTimers[id]);
+                delete peerDisconnectGraceTimers[id];
               }
               for (const [, dc] of Object.entries(dataChannels)) {
                 if (dc) {
@@ -1263,6 +1268,10 @@ module.exports = async (inputData = null) => {
             // 2) For each stale peer, close data channel and peer connection
             for (const oldPid of stalePeerIds) {
               delete peerOpChains[oldPid];
+              if (peerDisconnectGraceTimers[oldPid]) {
+                clearTimeout(peerDisconnectGraceTimers[oldPid]);
+                delete peerDisconnectGraceTimers[oldPid];
+              }
               if (dataChannelHeartbeatTimers[oldPid]) {
                 clearInterval(dataChannelHeartbeatTimers[oldPid]);
                 delete dataChannelHeartbeatTimers[oldPid];
@@ -1292,6 +1301,10 @@ module.exports = async (inputData = null) => {
           };
 
           const disposePeerConnection = async peerId => {
+            if (peerDisconnectGraceTimers[peerId]) {
+              clearTimeout(peerDisconnectGraceTimers[peerId]);
+              delete peerDisconnectGraceTimers[peerId];
+            }
             if (dataChannelHeartbeatTimers[peerId]) {
               clearInterval(dataChannelHeartbeatTimers[peerId]);
               delete dataChannelHeartbeatTimers[peerId];
@@ -1355,8 +1368,25 @@ module.exports = async (inputData = null) => {
 
             pc.onconnectionstatechange = () => {
               const st = pc.connectionState;
-              if (st === 'failed' || st === 'closed') {
-                recoverPeerTransport(remotePeerId, pc);
+              if (st === 'disconnected' && !peerDisconnectGraceTimers[remotePeerId]) {
+                // A VPN/network switch may keep ICE 'disconnected' without
+                // closing WebSocket. Allow transient routing changes to heal.
+                peerDisconnectGraceTimers[remotePeerId] = setTimeout(() => {
+                  delete peerDisconnectGraceTimers[remotePeerId];
+                  if (!p2pShuttingDown &&
+                      peerConnections[remotePeerId] === pc &&
+                      pc.connectionState === 'disconnected') {
+                    recoverPeerTransport(remotePeerId, pc);
+                  }
+                }, 15000);
+              } else if (st !== 'disconnected') {
+                if (peerDisconnectGraceTimers[remotePeerId]) {
+                  clearTimeout(peerDisconnectGraceTimers[remotePeerId]);
+                  delete peerDisconnectGraceTimers[remotePeerId];
+                }
+                if (st === 'failed' || st === 'closed') {
+                  recoverPeerTransport(remotePeerId, pc);
+                }
               }
             };
 
