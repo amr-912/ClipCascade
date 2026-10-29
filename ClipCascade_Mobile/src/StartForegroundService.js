@@ -324,6 +324,10 @@ module.exports = async (inputData = null) => {
 
         //clipboard monitor
         const { ClipboardListener } = NativeModules;
+        // In-memory stage counters; never pass clipboard payloads or URI strings.
+        const noteClipboardStage = stage => {
+          try { ClipboardListener?.recordTransportStage?.(stage); } catch (_) {}
+        };
         const clipboardListener = new NativeEventEmitter(ClipboardListener);
         // start clipboard listening
         ClipboardListener.startListening();
@@ -333,6 +337,7 @@ module.exports = async (inputData = null) => {
           async params => {
             try {
               if (params && params.content && params.type) {
+                noteClipboardStage('js-' + params.type);
                 await sendClipBoard(params.content, params.type);
               }
             } catch (e) {
@@ -939,6 +944,7 @@ module.exports = async (inputData = null) => {
               );
               if (openChannels.length === 0) {
                 queueLatestClipboard(originalContent, type_);
+                noteClipboardStage('p2p-' + type_ + '-pending');
                 p2pMsg = '⏳ Clipboard pending: waiting for P2P data channel';
                 await p2pStatusMessageChanged();
                 return;
@@ -1027,6 +1033,7 @@ module.exports = async (inputData = null) => {
                 // DataChannel.send only queues chunks: this does NOT imply
                 // application-level acknowledgement by the receiving device.
                 previous_clipboard_content_hash = hcb;
+                noteClipboardStage('p2p-' + type_ + '-queued');
               } finally {
                 if (sendingFragmentId === metadata.id) {
                   await resetSendingFragmentId();
@@ -1034,6 +1041,7 @@ module.exports = async (inputData = null) => {
               }
             } catch (e) {
               queueLatestClipboard(originalContent, type_);
+              noteClipboardStage('p2p-' + type_ + '-error');
               p2pMsg = '❌ P2P Outbound Error: ' + String(e?.message || e);
               await p2pStatusMessageChanged();
             }
