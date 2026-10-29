@@ -122,7 +122,7 @@ test('native listener ignores the exact received-image label and preserves user 
     'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardFloatingActivity.kt'), 'utf8');
   assert.match(native, /CLIPCASCADE_REMOTE_IMAGE_LABEL/);
   assert.match(bridge, /ClipData\.newUri\([^\n]*CLIPCASCADE_REMOTE_IMAGE_LABEL/);
-  assert.match(floating, /description\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
+  assert.match(floating, /description\?\.label\?\.toString\(\) == CLIPCASCADE_REMOTE_IMAGE_LABEL/);
 });
 
 test('Android clipboard monitor has background logcat reader watchdog', () => {
