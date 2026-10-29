@@ -45,6 +45,7 @@ function fakeTransport() {
     sendingFragmentStats: null,
     resetSendingFragmentId: async function () { context.sendingFragmentId = ''; },
     sleep: async () => {},
+    noteClipboardStage: () => {},
     Date, Object, JSON, String,
   };
   context.newCB = async hcb => context.previous_clipboard_content_hash !== hcb;
@@ -183,6 +184,7 @@ test('Android diagnostics are user-triggered and never expose payload or URI', (
   assert.ok(start > 0);
   const diagnostic = native.slice(start, end);
   assert.match(diagnostic, /observedEvents/);
+  assert.match(diagnostic, /lastTransportStage/);
   assert.match(diagnostic, /mimeTypes/);
   assert.match(diagnostic, /imageReadable/);
   assert.match(diagnostic, /primaryClipAccessible/);
@@ -190,4 +192,13 @@ test('Android diagnostics are user-triggered and never expose payload or URI', (
   assert.doesNotMatch(diagnostic, /putString\("uri"/);
   assert.match(app, /onPress=\{async \(\) => \{/);
   assert.match(app, /ClipboardListener\.inspectCurrentClipboard\(\)/);
+});
+
+test('Android clipboard transport stage reporting contains only whitelisted state', () => {
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
+  assert.match(native, /fun recordTransportStage\(stage: String\)/);
+  assert.match(native, /stage in setOf\(/);
+  assert.match(native, /"p2p-image-queued"/);
+  assert.match(source, /noteClipboardStage\('p2p-' \+ type_ \+ '-queued'\)/);
 });
