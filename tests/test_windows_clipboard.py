@@ -133,3 +133,26 @@ def test_disabled_file_transfer_does_not_forward_files(monitor):
     monitor._callback_update = lambda kind, content: calls.append(kind)
     monitor._deliver_clipboard("files", ("C:/file.pdf",), True, False)
     assert calls == []
+
+
+
+def test_remote_image_echo_marker_matches_exact_clipboard_sequence(monitor):
+    delivered = []
+    monitor._callback_update = lambda kind, payload: delivered.append(kind)
+    monitor._own_image_sequence = 55
+    monitor._block_image_once = False
+    img = Image.new("RGB", (2, 2))
+    monitor._deliver_clipboard("image", img, True, True, sequence=55)
+    assert delivered == []
+    monitor._deliver_clipboard("image", img, True, True, sequence=56)
+    assert delivered == ["image"]
+
+
+def test_new_screenshot_never_consumes_stale_remote_image_marker(monitor):
+    delivered = []
+    monitor._callback_update = lambda kind, payload: delivered.append(kind)
+    monitor._own_image_sequence = 55
+    monitor._block_image_once = False
+    monitor._deliver_clipboard("image", Image.new("RGB", (2, 2)), True, True, sequence=57)
+    assert delivered == ["image"]
+    assert monitor._own_image_sequence is None
