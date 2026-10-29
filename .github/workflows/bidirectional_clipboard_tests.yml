@@ -6,6 +6,8 @@ on:
       - 'ClipCascade_Mobile/src/StartForegroundService.js'
       - 'ClipCascade_Mobile/src/App.js'
       - 'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/**'
+      - 'ClipCascade_Mobile/src/android/app/src/test/**'
+      - 'ClipCascade_Mobile/src/android/app/build.gradle'
       - 'ClipCascade_Desktop/src/p2p/p2p_manager.py'
       - 'tests/test_android_clipboard_transport.cjs'
       - 'docs/ANDROID_SCREENSHOT_FIELD_TEST.md'
@@ -79,6 +81,9 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:compileDebugKotlin -PhermesEnabled=true --no-daemon --stacktrace
+      - name: Verify real Android ClipData / MIME classification with Robolectric
+        working-directory: ClipCascade_Mobile/src/android
+        run: ./gradlew :app:testDebugUnitTest --tests com.clipcascade.ClipboardContentSelectorTest -PhermesEnabled=true --no-daemon
       - name: Package separately installable Android preview APK
         working-directory: ClipCascade_Mobile/src/android
         run: ./gradlew :app:assemblePreview -PhermesEnabled=true --no-daemon
