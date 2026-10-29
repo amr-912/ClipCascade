@@ -5,6 +5,7 @@ on:
       - 'ClipCascade_Desktop/src/clipboard/**'
       - 'ClipCascade_Desktop/src/p2p/p2p_manager.py'
       - 'tests/test_windows_clipboard.py'
+      - 'tests/test_windows_clipboard_live.py'
       - 'tests/test_clipboard_image_encoding.py'
       - 'tests/test_clipboard_p2p_backpressure.py'
       - '.github/workflows/clipboard_windows_tests.yml'
@@ -27,11 +28,17 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install pytest pillow
+      - name: Install native Windows test dependency
+        if: runner.os == 'Windows'
+        run: python -m pip install pywin32==306
       - name: Run clipboard tests with Windows API stubs
         run: python -m pytest -q tests/test_windows_clipboard.py tests/test_clipboard_image_encoding.py tests/test_clipboard_p2p_backpressure.py
+      - name: Windows clipboard integration test
+        if: runner.os == 'Windows'
+        run: python -m pytest -q tests/test_windows_clipboard_live.py
 
   windows-preview:
-    name: Build Windows EXE and MSI preview (3.3.3)
+    name: Build Windows EXE and MSI preview (3.3.4)
     runs-on: windows-latest
     needs: clipboard-unit
     steps:
@@ -43,7 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $versions = Get-Content version.json -Raw | ConvertFrom-Json
-          $versions.windows = '3.3.3'
+          $versions.windows = '3.3.4'
           $env:VERSIONS_JSON = $versions | ConvertTo-Json -Compress
           python .github/scripts/apply_app_version.py desktop
           if ($LASTEXITCODE -ne 0) { throw 'Preview version injection failed' }
@@ -85,21 +92,21 @@ jobs:
           python .github/scripts/generate_rtf.py LICENSE "$stage/LICENSE.rtf"
           if ($LASTEXITCODE -ne 0) { throw 'License generation failed' }
           "STAGE=$stage" >> $env:GITHUB_ENV
-      - name: Build MSI upgrade installer (preview 3.3.3)
+      - name: Build MSI upgrade installer (preview 3.3.4)
         shell: pwsh
         run: |
-          candle.exe -arch x64 '-dProductVersion=3.3.3' "-dStagingDir=$env:STAGE" ClipCascade_Desktop/installer/windows/ClipCascade.wxs -out installer.wixobj
+          candle.exe -arch x64 '-dProductVersion=3.3.4' "-dStagingDir=$env:STAGE" ClipCascade_Desktop/installer/windows/ClipCascade.wxs -out installer.wixobj
           if ($LASTEXITCODE -ne 0) { throw 'WiX compilation failed' }
-          light.exe -ext WixUIExtension installer.wixobj -out ClipCascade-ClipboardPreview-3.3.3.msi
+          light.exe -ext WixUIExtension installer.wixobj -out ClipCascade-ClipboardPreview-3.3.4.msi
           if ($LASTEXITCODE -ne 0) { throw 'WiX linking failed' }
-          if (-not (Test-Path 'ClipCascade-ClipboardPreview-3.3.3.msi')) { throw 'MSI missing' }
+          if (-not (Test-Path 'ClipCascade-ClipboardPreview-3.3.4.msi')) { throw 'MSI missing' }
       - name: Prepare user-facing preview files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force 'preview-output' | Out-Null
-          Copy-Item ClipCascade-ClipboardPreview-3.3.3.msi preview-output/
+          Copy-Item ClipCascade-ClipboardPreview-3.3.4.msi preview-output/
           @'
-          ClipCascade Windows clipboard preview 3.3.3 (unsigned, test build).
+          ClipCascade Windows clipboard preview 3.3.4 (unsigned, test build).
           This is NOT the upstream official release. Source: amr-912/ClipCascade.
           Recommended: close ClipCascade on Windows (Quit) before MSI install.
           Back up C:\ClipCascade\DATA locally if that file exists. Do not upload it:
@@ -114,9 +121,9 @@ jobs:
           '@ | Set-Content preview-output/README-PREVIEW.txt -Encoding utf8
       - uses: actions/upload-artifact@v4
         with:
-          name: ClipCascade-ClipboardFix-MSI-3.3.3
+          name: ClipCascade-ClipboardFix-MSI-3.3.4
           path: |
-            preview-output/ClipCascade-ClipboardPreview-3.3.3.msi
+            preview-output/ClipCascade-ClipboardPreview-3.3.4.msi
             preview-output/README-PREVIEW.txt
           if-no-files-found: error
           retention-days: 14
