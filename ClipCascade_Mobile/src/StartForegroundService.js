@@ -541,7 +541,7 @@ module.exports = async (inputData = null) => {
                 ) {
                   // base64 encode
                   if (type_ === 'image') {
-                    clipContent = await NativeBridgeModule.getFileAsBase64(
+                    clipContent = await NativeBridgeModule.getClipboardImageAsBase64(
                       clipContent,
                     );
                   } else if (type_ === 'files') {
@@ -951,7 +951,7 @@ module.exports = async (inputData = null) => {
               }
 
               if (type_ === 'image') {
-                clipContent = await NativeBridgeModule.getFileAsBase64(clipContent);
+                clipContent = await NativeBridgeModule.getClipboardImageAsBase64(clipContent);
               } else if (type_ === 'files') {
                 const temp = {};
                 const filePaths = clipContent.split(',').filter(p => p.trim() !== '');
