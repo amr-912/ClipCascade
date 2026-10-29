@@ -23,7 +23,8 @@ jobs:
   # =====================================================================
   prep:
     runs-on: ubuntu-latest
-    # Fork safety: do not publish releases until signing, registries and server deployment are configured.\n    # An owner may explicitly enable releases with the repository variable below.\n    if: ${{ vars.CLIPCASCADE_RELEASES_ENABLED == 'true' && !contains(github.event.head_commit.message, '[skip release]') }}
+    # Fork safety: do not publish releases until signing, registries and server deployment are configured.
+    # An owner may explicitly enable releases with the repository variable below.\n    if: ${{ vars.CLIPCASCADE_RELEASES_ENABLED == 'true' && !contains(github.event.head_commit.message, '[skip release]') }}
     outputs:
       release:        ${{ steps.parse.outputs.release }}
       bumps_json:     ${{ steps.parse.outputs.bumps_json }}
