@@ -140,6 +140,11 @@ class ClipboardManager:
                     callback(content, type_)
 
             elif type_ == "image":
+                if isinstance(content, Image.Image):
+                    logging.info(
+                        "Windows clipboard image detected: %sx%s, source format=%s",
+                        content.width, content.height, content.format or "in-memory"
+                    )
                 if isinstance(content, list):
                     if content is None or len(content) == 0:
                         raise ValueError(
@@ -149,6 +154,7 @@ class ClipboardManager:
                     content = Image.open(content[0])
                 if self.is_clipboard_size_within_limit(content, type_):
                     content_str = ClipboardManager.convert_image_to_base64(img=content)
+                    logging.info("Clipboard image encoded as PNG: %d base64 bytes", len(content_str))
                     callback(content_str, type_)
 
             elif type_ == "files":
@@ -241,10 +247,16 @@ class ClipboardManager:
                         bmp_data = output.getvalue()[14:]  # Skip BMP header (14 bytes)
 
                     win32clipboard.OpenClipboard()
-                    win32clipboard.EmptyClipboard()
-                    clipboard_monitor.enable_block_image_once()  # Block image copy to prevent deadlock
-                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
-                    win32clipboard.CloseClipboard()
+                    wrote_image = False
+                    try:
+                        win32clipboard.EmptyClipboard()
+                        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
+                        wrote_image = True
+                    finally:
+                        win32clipboard.CloseClipboard()
+                    if wrote_image:
+                        # Suppress only THIS write, not the next real user screenshot.
+                        clipboard_monitor.mark_own_image_written()
                 elif PLATFORM == MACOS:
                     # Save the image to a binary buffer in TIFF format
                     with io.BytesIO() as output:
