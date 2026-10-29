@@ -70,42 +70,25 @@ class ClipboardFloatingActivity : AppCompatActivity() {
     }
 
     private fun getClipboardContent() {
-        val clip = clipboardManager.primaryClip
-        if (clip != null && clip.itemCount > 0) {
-
-            val description = clip.description
-            if (description == null || description.label?.toString() == CLIPCASCADE_REMOTE_IMAGE_LABEL) {
+        try {
+            val clip = clipboardManager.primaryClip
+            val description = clip?.description
+            if (description?.label?.toString() == CLIPCASCADE_REMOTE_IMAGE_LABEL) {
+                ClipboardListenerModule.recordClipboardEvent("overlay", "remote-image", description)
                 return
             }
-
-            val mimeType = description.getMimeType(0)
-            if (mimeType == null) {
-                return
+            val payload = clip?.let { selectClipboardPayload(it, contentResolver) }
+            ClipboardListenerModule.recordClipboardEvent("overlay", payload?.type ?: "unavailable", description)
+            if (payload != null) {
+                val params: WritableMap = Arguments.createMap()
+                params.putString("content", payload.content)
+                params.putString("type", payload.type)
+                reactContext
+                    ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    ?.emit("onClipboardChange", params)
             }
-
-            val item = clip.getItemAt(0)
-            val params: WritableMap = Arguments.createMap()
-            
-            if (mimeType.startsWith("text/") && item.text != null) {
-                // Text
-                params.putString("content", item.text.toString())
-                params.putString("type", "text")
-            }
-            else if (description.hasMimeType("image/*") && item.uri != null) {
-                // Image
-                params.putString("content", item.uri.toString())
-                params.putString("type", "image")
-            }
-            else if (item.uri != null) {
-                // Files
-                params.putString("content", item.uri.toString())
-                params.putString("type", "files")
-            }
-
-            // Emit event to JS
-            reactContext
-                ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                ?.emit("onClipboardChange", params) 
+        } catch (_: Exception) {
+            ClipboardListenerModule.recordClipboardEvent("overlay", "access-error", null)
         }
     }
 
