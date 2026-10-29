@@ -212,3 +212,24 @@ test('Android image bridge bounds reads and does not expose URI in errors', () =
   assert.match(bridge, /if \(size < 0\)/);
   assert.match(source, /NativeBridgeModule\.getClipboardImageAsBase64/);
 });
+
+test('Android VPN-induced ICE disconnect gets a bounded recovery grace', () => {
+  const peer = segment('          const createPeerConnection = async remotePeerId => {',
+    '\n          /**\n           * Create an SDP offer for remotePeerId');
+  const cleanup = segment('          async function cleanupPeerConnections() {',
+    '\n          const initializeWebSocketSignalingClient = async () => {');
+  assert.match(peer, /st === 'disconnected'/);
+  assert.match(peer, /pc\.connectionState === 'disconnected'/);
+  assert.match(peer, /recoverPeerTransport\(remotePeerId, pc\)/);
+  assert.match(peer, /15000/);
+  assert.match(cleanup, /clearTimeout\(peerDisconnectGraceTimers\[id\]\)/);
+});
+
+test('Preview setup shows the actual application package in ADB commands', () => {
+  const app = fs.readFileSync(path.join(root, 'ClipCascade_Mobile/src/App.js'), 'utf8');
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
+  assert.match(native, /"applicationId" to BuildConfig\.APPLICATION_ID/);
+  assert.match(app, /\$\{androidClipboardPackage\} android\.permission\.READ_LOGS/);
+  assert.match(app, /\$\{androidClipboardPackage\} SYSTEM_ALERT_WINDOW allow/);
+});
