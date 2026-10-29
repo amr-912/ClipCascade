@@ -30,7 +30,7 @@ function fakeTransport() {
     enable_image_sharing: 'true',
     enable_file_sharing: 'true',
     validateClipboardSize: async () => true,
-    NativeBridgeModule: {getFileAsBase64: async () => 'aW1hZ2U=', getFileName: async name => name},
+    NativeBridgeModule: {getFileAsBase64: async () => 'aW1hZ2U=', getClipboardImageAsBase64: async () => 'aW1hZ2U=', getFileName: async name => name},
     hashCB: async input => input,
     previous_clipboard_content_hash: '',
     p2pMsg: '',
@@ -201,4 +201,14 @@ test('Android clipboard transport stage reporting contains only whitelisted stat
   assert.match(native, /stage in setOf\(/);
   assert.match(native, /"p2p-image-queued"/);
   assert.match(source, /noteClipboardStage\('p2p-' \+ type_ \+ '-queued'\)/);
+});
+
+test('Android image bridge bounds reads and does not expose URI in errors', () => {
+  const bridge = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/NativeBridgeModule.kt'), 'utf8');
+  assert.match(bridge, /fun getClipboardImageAsBase64\(contentUri: String, promise: Promise\)/);
+  assert.match(bridge, /maxImageBytes = 32L \* 1024 \* 1024/);
+  assert.match(bridge, /Base64\.NO_WRAP/);
+  assert.match(bridge, /if \(size < 0\)/);
+  assert.match(source, /NativeBridgeModule\.getClipboardImageAsBase64/);
 });
