@@ -140,6 +140,11 @@ class ClipboardManager:
                     callback(content, type_)
 
             elif type_ == "image":
+                if isinstance(content, Image.Image):
+                    logging.info(
+                        "Windows clipboard image detected: %sx%s, source format=%s",
+                        content.width, content.height, content.format or "in-memory"
+                    )
                 if isinstance(content, list):
                     if content is None or len(content) == 0:
                         raise ValueError(
@@ -149,6 +154,7 @@ class ClipboardManager:
                     content = Image.open(content[0])
                 if self.is_clipboard_size_within_limit(content, type_):
                     content_str = ClipboardManager.convert_image_to_base64(img=content)
+                    logging.info("Clipboard image encoded as PNG: %d base64 bytes", len(content_str))
                     callback(content_str, type_)
 
             elif type_ == "files":
@@ -241,10 +247,16 @@ class ClipboardManager:
                         bmp_data = output.getvalue()[14:]  # Skip BMP header (14 bytes)
 
                     win32clipboard.OpenClipboard()
-                    win32clipboard.EmptyClipboard()
-                    clipboard_monitor.enable_block_image_once()  # Block image copy to prevent deadlock
-                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
-                    win32clipboard.CloseClipboard()
+                    wrote_image = False
+                    try:
+                        win32clipboard.EmptyClipboard()
+                        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
+                        wrote_image = True
+                    finally:
+                        win32clipboard.CloseClipboard()
+                    if wrote_image:
+                        # Suppress only THIS write, not the next real user screenshot.
+                        clipboard_monitor.mark_own_image_written()
                 elif PLATFORM == MACOS:
                     # Save the image to a binary buffer in TIFF format
                     with io.BytesIO() as output:
@@ -382,58 +394,37 @@ class ClipboardManager:
         return file_objects
 
     @staticmethod
+    def _image_as_png_bytes(img: Image.Image | bytes) -> bytes:
+        """Normalize all clipboard pictures to a valid PNG file.
+
+        Windows screenshot/CF_DIB images often come back from Pillow with
+        img.format == "DIB". Raw DIB is NOT a PNG or complete BMP file and
+        may not be decoded by Android BitmapFactory. The transmitted format
+        must be independent of the source clipboard representation.
+        """
+        if isinstance(img, (bytes, bytearray)):
+            with Image.open(io.BytesIO(img)) as source:
+                source.load()
+                return ClipboardManager._image_as_png_bytes(source)
+        if not isinstance(img, Image.Image):
+            raise TypeError("Clipboard image must be a Pillow image or encoded image bytes")
+
+        # Keep supported alpha/palette modes; convert unusual modes to RGB/RGBA.
+        if img.mode not in ("1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16"):
+            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+        with io.BytesIO() as buffer:
+            img.save(buffer, format="PNG")
+            return buffer.getvalue()
+
+    @staticmethod
     def get_image_size(img: Image.Image | bytes) -> int:
-        """
-        Calculate the size of an image in bytes.
-
-        Args:
-            img (Image.Image | bytes): The image to calculate the size for.
-
-        Returns:
-            int: The size of the image in bytes.
-
-        Raises:
-            IOError: If the image cannot be processed or saved.
-        """
-        try:
-            if isinstance(img, bytes):
-                size_in_bytes = len(img)
-            if isinstance(img, Image.Image):
-                with io.BytesIO() as buffer:
-                    img.save(buffer, format=img.format or "PNG")
-                    size_in_bytes = buffer.tell()
-
-            return size_in_bytes
-        except Exception as e:
-            raise IOError(f"Failed to calculate the image size. {e}") from e
+        """Return size of the actual PNG representation sent to Android."""
+        return len(ClipboardManager._image_as_png_bytes(img))
 
     @staticmethod
     def convert_image_to_base64(img: Image.Image | bytes) -> str:
-        """
-        Converts an image to a base64-encoded string.
-
-        Args:
-            img (Image.Image | bytes): The image to be converted.
-
-        Returns:
-            str: The base64-encoded string representation of the image.
-
-        Raises:
-            IOError: If the image cannot be processed or saved.
-        """
-        try:
-            if isinstance(img, bytes):
-                base64_string = base64.b64encode(img).decode("utf-8")
-            if isinstance(img, Image.Image):
-                with io.BytesIO() as buffered:
-                    img.save(buffered, format=img.format or "PNG")
-                    base64_string = base64.b64encode(buffered.getvalue()).decode(
-                        "utf-8"
-                    )
-
-            return base64_string
-        except Exception as e:
-            raise IOError(f"Failed to convert the image to base64. {e}") from e
+        """Encode a complete PNG file, never a Windows raw DIB bitmap."""
+        return base64.b64encode(ClipboardManager._image_as_png_bytes(img)).decode("ascii")
 
     @staticmethod
     def convert_base64_to_image(base64_img: str) -> Image.Image:

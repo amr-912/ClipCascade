@@ -743,56 +743,95 @@ class P2PManager(ReconnectMixin, WSInterface):
         self.sending_fragment_id = ""
         self.sending_fragment_stats = None
 
+    @staticmethod
+    async def _send_chunk_with_backpressure(channel, message, deadline, cancelled):
+        """Do not enqueue entire screenshots into SCTP before the loop can flush.
+
+        aiortc RTCDataChannel.send() is synchronous and increments bufferedAmount.
+        Yield while its buffer is full so WebRTC can transmit existing chunks.
+        """
+        max_buffered_bytes = 256 * 1024
+        while getattr(channel, "bufferedAmount", 0) >= max_buffered_bytes:
+            if cancelled() or getattr(channel, "readyState", "") != "open":
+                return False
+            if time.monotonic() >= deadline:
+                raise TimeoutError("P2P image transfer backpressure timed out")
+            await asyncio.sleep(0.02)
+        if cancelled() or getattr(channel, "readyState", "") != "open":
+            return False
+        channel.send(message)
+        # Cooperative scheduling is essential for aiortc SCTP/ICE send queue.
+        await asyncio.sleep(0)
+        return True
+
     async def _send(self, payload: str, payload_type: str = "text"):
         try:
-            if self.clipboard_manager.has_clipboard_changed(payload):
-                self.reset_sending_fragment_id()
-                self.reset_receiving_fragments()
+            channels = [
+                (peer_id, channel)
+                for peer_id, channel in list(self.data_channels.items())
+                if getattr(channel, "readyState", "") == "open"
+            ]
+            if not channels:
+                logging.warning("Clipboard outbound %s not transmitted: no open P2P data channel", payload_type)
+                return  # Do not record payload hash as delivered.
 
-                raw_payload_size_in_bytes = len(payload.encode("utf-8"))
+            if not self.clipboard_manager.has_clipboard_changed(payload):
+                return
 
-                if self.config.data["cipher_enabled"]:
-                    payload = CipherManager.encode_to_json_string(
-                        **self.cipher_manager.encrypt(payload)
+            self.reset_sending_fragment_id()
+            self.reset_receiving_fragments()
+            raw_payload_size_in_bytes = len(payload.encode("utf-8"))
+
+            if self.config.data["cipher_enabled"]:
+                payload = CipherManager.encode_to_json_string(
+                    **self.cipher_manager.encrypt(payload)
+                )
+
+            fragments = P2PManager.fragment_string(payload)
+            metadata = {
+                "id": str(uuid.uuid4()),
+                "isFragmented": len(fragments) > 1,
+                "index": 0,
+                "totalFragments": len(fragments),
+                "combinedRawPayloadSizeInBytes": raw_payload_size_in_bytes,
+            }
+            self.sending_fragment_id = metadata["id"]
+            logging.info(
+                "P2P outbound %s: %d encoded bytes, %d fragments, %d open peer(s)",
+                payload_type, raw_payload_size_in_bytes, len(fragments), len(channels)
+            )
+
+            deadline = time.monotonic() + 120
+            for fragment in fragments:
+                if self.sending_fragment_id != metadata["id"]:
+                    logging.info("P2P outbound %s interrupted by a newer clipboard event", payload_type)
+                    return
+
+                body = json.dumps(
+                    {"payload": fragment, "type": payload_type, "metadata": metadata}
+                )
+                metadata["index"] += 1
+                for peer_id, channel in channels:
+                    ok = await self._send_chunk_with_backpressure(
+                        channel, body, deadline,
+                        lambda: self.sending_fragment_id != metadata["id"]
                     )
-
-                fragments = P2PManager.fragment_string(payload)
-                metadata = {
-                    "id": str(uuid.uuid4()),
-                    "isFragmented": len(fragments) > 1,
-                    "index": 0,
-                    "totalFragments": len(fragments),
-                    "combinedRawPayloadSizeInBytes": raw_payload_size_in_bytes,
-                }
-
-                self.sending_fragment_id = metadata["id"]
-                for fragment in fragments:
-                    if self.sending_fragment_id != metadata["id"]:
-                        break
-
-                    body = json.dumps(
-                        {
-                            "payload": fragment,
-                            "type": payload_type,
-                            "metadata": metadata,
-                        }
-                    )
-                    metadata["index"] += 1
-
-                    # Send to all open DataChannels
-                    for peer_id, channel in self.data_channels.items():
-                        if channel.readyState == "open":
-                            channel.send(body)
-
-                    if metadata["isFragmented"]:
-                        self.sending_fragment_stats = (
-                            f"{metadata['index']}/{metadata['totalFragments']}"
+                    if not ok:
+                        logging.warning(
+                            "P2P outbound %s incomplete: data channel to peer no longer ready",
+                            payload_type
                         )
-                else:
-                    self.reset_sending_fragment_id()
+                        return
 
+                if metadata["isFragmented"]:
+                    self.sending_fragment_stats = (
+                        f"{metadata['index']}/{metadata['totalFragments']}"
+                    )
+            # These chunks have been queued, not acknowledged by the receiver.
+            logging.info("P2P outbound %s queued all %d fragments", payload_type, len(fragments))
+            self.reset_sending_fragment_id()
         except Exception as e:
-            logging.error(f"Failed to send data: {e}")
+            logging.error("Failed to send %s clipboard data: %s", payload_type, e)
 
     def reset_receiving_fragments(self):
         self.receiving_fragments = {}
