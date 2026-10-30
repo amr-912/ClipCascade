@@ -53,3 +53,41 @@
 - End-to-end sender/receiver delivery acknowledgements and bounded retry/dedup for intermittent copy reliability; none proven on the phone.
 - TURN/server relay for strict VPN networks (not implemented).
 - Release signing/versioning, automated rollback and merge strategy for PR #1/#2 after acceptance.
+
+## Reproducible manual GitHub Actions build — available from default `main`
+
+The testing source is durable in PR #2, but GitHub Actions did **not** automatically
+launch after the 2026-10-30 connector-generated commits. **Do not mistake CI from
+2026-10-29 (old head `68211fa3`) for tests of this new screenshot feature.**
+
+A safe *workflow-only* file has been placed on the default branch:
+`.github/workflows/clipcascade_manual_preview.yml`. It has no server deploy
+permissions and never overwrites installed applications.
+
+To build the actual new Preview via GitHub browser:
+1. Visit `https://github.com/amr-912/ClipCascade/actions/workflows/clipcascade_manual_preview.yml`.
+2. Select **Run workflow**; leave `source_ref` as
+   `fix/bidirectional-clipboard-delivery`; submit.
+3. Require successful Android JS behavior, Windows P2P regressions
+   (Ubuntu and Windows), Android Kotlin compilation, Robolectric tests and APK
+   packaging.
+4. Only then download the **new** artifact
+   `ClipCascade-Android-Bidirectional-Preview` from that specific successful
+   run. Old artifacts from run `40972020128` are **not** the screenshot
+   auto-sync build.
+5. Android Preview package remains `com.clipcascade.preview`. Keep same
+   debug signing authority where possible; preserve original official install.
+
+GitHub build artifacts can expire after 14 days. The source, commit history,
+test cases, field report, CI YAML and restore instructions remain in the Git
+repository. Do not depend on artifact retention as a source-code backup.
+
+## Server finding
+
+The checked-in Spring server activates P2P WebSocket signaling at
+`/p2psignaling` only for `app.p2p.enabled=true`, and activates STOMP relay
+at `/clipsocket` only for `app.p2p.enabled=false`. The two modes are
+**mutually exclusive** in the actual upstream server implementation. Therefore
+do not claim a drop-in P2S WSS fallback exists on the user's running P2P server.
+A safe TURN migration with expiring credentials is specified in
+`docs/VPN_TURN_DEPLOYMENT.md`; not yet deployed.
