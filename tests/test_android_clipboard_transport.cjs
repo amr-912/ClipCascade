@@ -233,3 +233,37 @@ test('Preview setup shows the actual application package in ADB commands', () =>
   assert.match(app, /\$\{androidClipboardPackage\} android\.permission\.READ_LOGS/);
   assert.match(app, /\$\{androidClipboardPackage\} SYSTEM_ALERT_WINDOW allow/);
 });
+
+test('screenshot observer is opt-in, never reads old gallery, and uses existing image transport', () => {
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
+  const monitor = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ScreenshotMediaMonitor.kt'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'ClipCascade_Mobile/src/App.js'), 'utf8');
+  const manifest = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/AndroidManifest.xml'), 'utf8');
+  assert.match(source, /getDataFromAsyncStorage\('auto_sync_screenshots'\)/);
+  assert.match(source, /ClipboardListener\.startScreenshotMonitoring\(\)/);
+  assert.match(native, /Manifest\.permission\.READ_MEDIA_IMAGES/);
+  assert.match(native, /ScreenshotMediaMonitor\(reactApplicationContext\)/);
+  assert.match(native, /params\.putString\("type", "image"\)/);
+  assert.match(native, /fun stopListening\(\)[\s\S]*?screenshotMediaMonitor\?\.stop\(\)/);
+  assert.match(monitor, /baselineId = latestImageId\(\)/);
+  assert.match(monitor, /registerContentObserver/);
+  assert.match(monitor, /MediaStore\.MediaColumns\.IS_PENDING/);
+  assert.match(monitor, /delivered\.contains\(id\)/);
+  assert.match(monitor, /isSavedScreenshot\(relativePath, name\)/);
+  assert.doesNotMatch(monitor, /MediaStore\.Images\.Media\.DATA/);
+  assert.match(app, /PermissionsAndroid\.PERMISSIONS\.READ_MEDIA_IMAGES/);
+  assert.match(app, /Enable Auto-Sync Screenshots/);
+  assert.match(manifest, /android\.permission\.READ_MEDIA_IMAGES/);
+});
+
+test('ICE network/VPN detection examines both connection and ICE states', () => {
+  const peer = segment('          const createPeerConnection = async remotePeerId => {',
+    '\n          /**\n           * Create an SDP offer for remotePeerId');
+  assert.match(peer, /pc\.oniceconnectionstatechange = checkPeerConnectivity/);
+  assert.match(peer, /ice === 'failed'/);
+  assert.match(peer, /ice === 'disconnected'/);
+  assert.match(peer, /recoverPeerTransport\(remotePeerId, pc\)/);
+});
