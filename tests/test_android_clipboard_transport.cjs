@@ -304,3 +304,12 @@ test('screenshot observer defers unfinished image rows and advances cursor past 
   assert.match(watcher, /lastCompletedId/);
   assert.match(watcher, /handler\.postDelayed\(scheduleScan, 1600L\)/);
 });
+
+
+test('screenshot media observer starts only after the encrypted outbound sender is defined', () => {
+  const sender = source.indexOf('const sendClipBoard = async (clipContent, type_ = \'text\') => {');
+  const monitor = source.indexOf("if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {");
+  assert.ok(sender >= 0, 'outbound sender must exist');
+  assert.ok(monitor > sender, 'observer cannot emit until JS transport is ready');
+  assert.match(source.slice(sender, monitor), /sendClipBoardP2P\(clipContent, type_\)/);
+});
