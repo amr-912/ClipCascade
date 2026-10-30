@@ -50,7 +50,8 @@ jobs:
 
   android-native:
     name: Compile real Android Kotlin modules
-    needs: android-behavior
+    # A downloadable APK is issued only if JS, Windows and Android checks pass.
+    needs: [android-behavior, windows-p2p]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -119,7 +120,16 @@ jobs:
           Windows: open Paint and press Ctrl+V to confirm actual delivery.
           Technical decision tree: docs/ANDROID_SCREENSHOT_FIELD_TEST.md
           Do not install on top of the original app or upload passwords/keys.
+          A passing CI build is NOT physical-Samsung acceptance, nor a VPN relay.
           EOF
+          {
+            echo "source_branch=${{ inputs.source_branch }}"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "build_type=preview-debug-signed"
+            echo "device_test_status=NOT_YET_VERIFIED"
+            echo "vpn_turn_status=NOT_CONFIGURED"
+          } > android-preview/BUILD_INFO.txt
+          sha256sum android-preview/ClipCascade-Preview-Bidirectional.apk > android-preview/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: ClipCascade-Android-Screenshot-AutoSync-Preview
