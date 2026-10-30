@@ -146,3 +146,15 @@ def test_pending_queue_is_bounded_and_latest_copy_wins():
     assert mgr._pending_outbound_clipboard[:2] == ("new", "text")
     mgr._remember_pending_clipboard("a" * (24*1024*1024+1), "text")
     assert mgr._pending_outbound_clipboard[0] == "new"
+
+def test_vpn_disconnection_recovery_grace_is_bounded_and_cancelled_on_teardown():
+    """Static guard for the aiortc event path; physical VPN relay is not simulated."""
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] /
+              "ClipCascade_Desktop/src/p2p/p2p_manager.py").read_text(encoding="utf-8")
+    assert '@pc.on("iceconnectionstatechange")' in source
+    assert 'pc.iceConnectionState' in source
+    assert "self.loop.call_later(15.0, recover_if_still_disconnected)" in source
+    assert "self._peer_disconnect_grace_handles.clear()" in source
+    assert "self._peer_disconnect_grace_handles.pop(peer_id, None)" in source
+    assert "self._recover_peer_transport(remote_peer_id, pc)" in source
