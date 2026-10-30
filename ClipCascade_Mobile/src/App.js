@@ -1,5 +1,6 @@
 import {
   PermissionsAndroid,
+  Platform,
   AppState,
   Image,
   StyleSheet,
@@ -114,6 +115,50 @@ export default function App() {
   const loginInProgressRef = useRef(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [clipboardDiagnostic, setClipboardDiagnostic] = useState(null);
+  const [autoSyncScreenshots, setAutoSyncScreenshots] = useState(false);
+  const [screenshotSyncBusy, setScreenshotSyncBusy] = useState(false);
+
+  useEffect(() => {
+    getDataFromAsyncStorage('auto_sync_screenshots')
+      .then(value => setAutoSyncScreenshots(value === 'true'))
+      .catch(() => setAutoSyncScreenshots(false));
+  }, []);
+
+  const toggleScreenshotSync = async () => {
+    if (screenshotSyncBusy) return;
+    setScreenshotSyncBusy(true);
+    try {
+      const monitor = NativeModules.ClipboardListener;
+      if (autoSyncScreenshots) {
+        await setDataInAsyncStorage('auto_sync_screenshots', 'false');
+        await monitor.stopScreenshotMonitoring();
+        setAutoSyncScreenshots(false);
+      } else {
+        const mediaPermission = Platform.Version >= 33
+          ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
+          : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+        const result = await PermissionsAndroid.request(mediaPermission, {
+          title: 'Sync new screenshots to your connected PC',
+          message: 'ClipCascade needs photo access to detect newly saved screenshots automatically. It does not upload existing photos or watch other gallery images.',
+          buttonPositive: 'Continue',
+          buttonNegative: 'Not now',
+        });
+        if (result !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('Screenshot sync not enabled',
+            'Choose Allow all photos in Android permissions for automatic future screenshot detection. Selected photos only is insufficient.');
+          return;
+        }
+        if (wsIsRunning === 'true') await monitor.startScreenshotMonitoring();
+        await setDataInAsyncStorage('auto_sync_screenshots', 'true');
+        setAutoSyncScreenshots(true);
+      }
+    } catch (e) {
+      Alert.alert('Screenshot monitoring unavailable', String(e?.message || e));
+    } finally {
+      setScreenshotSyncBusy(false);
+    }
+  };
+
 
   const [newVersionAvailable, setNewVersionAvailable] = useState([false, '']);
   const [donateUrl, setDonateUrl] = useState(null);
@@ -1394,6 +1439,33 @@ export default function App() {
             {/* Display p2p status message */}
             {wsPageP2PMessage !== '' && (
               <Text style={styles.message}>{wsPageP2PMessage}</Text>
+            )}
+            {/* Explicit opt-in. MediaStore watches new saved screenshots only. */}
+            {NativeModules.ClipboardListener?.startScreenshotMonitoring && (
+              <View style={{marginTop: 14, paddingHorizontal: 8}}>
+                <TouchableOpacity
+                  disabled={screenshotSyncBusy}
+                  style={[styles.loginButton, {
+                    backgroundColor: autoSyncScreenshots ? '#356b50' : '#34546b',
+                    opacity: screenshotSyncBusy ? 0.6 : 1,
+                  }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={autoSyncScreenshots
+                    ? 'Disable automatic saved screenshot sync'
+                    : 'Enable automatic saved screenshot sync'}
+                  onPress={toggleScreenshotSync}>
+                  <Text style={styles.loginButtonText}>
+                    {autoSyncScreenshots
+                      ? 'Auto-Sync Screenshots: ON (tap to disable)'
+                      : 'Enable Auto-Sync Screenshots'}
+                  </Text>
+                </TouchableOpacity>
+                <Text style={styles.label}>
+                  Optional: sends only NEW saved screenshots to connected peers.
+                  Requires full photo permission. Never scans or sends existing
+                  gallery pictures. Stop ClipCascade to stop monitoring.
+                </Text>
+              </View>
             )}
             {/* Explicit, local-only clipboard metadata diagnosis. No payload is displayed. */}
             {NativeModules.ClipboardListener?.inspectCurrentClipboard && (
