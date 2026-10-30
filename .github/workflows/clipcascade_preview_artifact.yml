@@ -1,0 +1,128 @@
+name: ClipCascade Android Preview - on-demand safe build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Experimental branch to build, never main
+        required: true
+        type: choice
+        default: test/screenshot-preview-release-2026-10-30
+        options:
+          - test/screenshot-preview-release-2026-10-30
+          - fix/bidirectional-clipboard-delivery
+
+permissions:
+  contents: read
+
+jobs:
+  android-behavior:
+    name: JS syntax and actual outbound function behavior
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse full service script
+        run: node --check ClipCascade_Mobile/src/StartForegroundService.js
+      - name: Run transfer and native-bridge regression tests
+        run: node --test tests/test_android_clipboard_transport.cjs
+
+  windows-p2p:
+    name: Windows P2P regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest pillow
+      - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py
+
+  android-native:
+    name: Compile real Android Kotlin modules
+    needs: android-behavior
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check GitHub runner Android SDK
+        run: |
+          test -n "$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platforms"
+          echo "Using preinstalled SDK at $ANDROID_HOME"
+      - name: Materialize upstream tracked Gradle CI defaults (without signing secrets)
+        run: |
+          cp ClipCascade_Mobile/src/android/gradle.properties.ci ClipCascade_Mobile/src/android/gradle.properties
+          # Production signing inputs are intentionally blank in the public
+          # template. Remove them for debug/preview builds so Gradle does not
+          # try to interpret an empty keystore path as a File.
+          sed -i '/^MYAPP_UPLOAD_/d' ClipCascade_Mobile/src/android/gradle.properties
+      - name: Install locked dependencies
+        working-directory: ClipCascade_Mobile/src
+        run: npm ci --no-audit --no-fund
+      - name: Compile native Android bridge and clipboard listeners
+        working-directory: ClipCascade_Mobile/src/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin -PhermesEnabled=true --no-daemon --stacktrace
+      - name: Verify real Android ClipData and screenshot whitelist with Robolectric
+        working-directory: ClipCascade_Mobile/src/android
+        run: ./gradlew :app:testDebugUnitTest --tests com.clipcascade.ClipboardContentSelectorTest --tests com.clipcascade.ScreenshotMediaMonitorTest -PhermesEnabled=true --no-daemon
+      - name: Package separately installable Android preview APK
+        working-directory: ClipCascade_Mobile/src/android
+        run: ./gradlew :app:assemblePreview -PhermesEnabled=true --no-daemon
+      - name: Check preview package and create installation notes
+        run: |
+          APK=ClipCascade_Mobile/src/android/app/build/outputs/apk/preview/app-preview.apk
+          test -s "$APK"
+          mkdir -p android-preview
+          cp "$APK" android-preview/ClipCascade-Preview-Bidirectional.apk
+          cat > android-preview/README.txt <<'EOF'
+          ClipCascade Android bidirectional test build.
+          Package ID: com.clipcascade.preview (separate from official com.clipcascade).
+          Build type: preview; debug-signed for testing, not production.
+          Keep official app installed. STOP original ClipCascade before testing
+          this preview; do not run two foreground clipboard monitors together.
+          Log in to the same existing server from the preview.
+          On Android 10+, to enable background copy interception, grant the
+          preview app READ_LOGS and overlay appop with Android Debug Bridge:
+            adb -d shell pm grant com.clipcascade.preview android.permission.READ_LOGS
+            adb -d shell appops set com.clipcascade.preview SYSTEM_ALERT_WINDOW allow
+          Then force-stop the preview and start it, accepting Android log access.
+          Optional auto-sync of NEW saved screenshots: on the connected
+          screen tap "Enable Auto-Sync Screenshots", grant ALL photos (not
+          selected photos), then take a NEW screenshot. No historical scans.
+          Screenshot permission can be revoked in Android Settings.
+          On the connected screen, capture a NEW Samsung screenshot, return
+          to Preview, then tap "Inspect Clipboard (metadata only)".
+          Record event counts, MIME types, detectedType, imageReadable and
+          lastTransportStage; do not share sensitive clipboard contents.
+          Windows: open Paint and press Ctrl+V to confirm actual delivery.
+          Technical decision tree: docs/ANDROID_SCREENSHOT_FIELD_TEST.md
+          Do not install on top of the original app or upload passwords/keys.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipCascade-Android-Screenshot-AutoSync-Preview
+          path: android-preview/*
+          if-no-files-found: error
+          retention-days: 14
