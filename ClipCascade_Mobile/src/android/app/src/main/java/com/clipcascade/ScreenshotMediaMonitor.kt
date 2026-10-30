@@ -43,6 +43,8 @@ internal class ScreenshotMediaMonitor(
     @Volatile private var observer: ContentObserver? = null
     private var baselineId = 0L
     private var scanInFlight = false
+    private var incompleteRetries = 0
+    private val maxIncompleteRetries = 6
 
     val isActive: Boolean get() = active
 
@@ -68,12 +70,16 @@ internal class ScreenshotMediaMonitor(
         executor.execute {
             try {
                 baselineId = latestImageId()
-                if (!active) return@execute
+                if (!active) {
+                    onReady(false)
+                    return@execute
+                }
                 val watch = object : ContentObserver(handler) {
                     override fun onChange(selfChange: Boolean) = changed()
                     override fun onChange(selfChange: Boolean, uri: Uri?) = changed()
                     private fun changed() {
                         if (!active) return
+                        incompleteRetries = 0
                         handler.removeCallbacks(scheduleScan)
                         // Let Samsung finish writing the screenshot/MediaStore row.
                         handler.postDelayed(scheduleScan, 900L)
@@ -84,6 +90,7 @@ internal class ScreenshotMediaMonitor(
                 if (!active) {
                     resolver.unregisterContentObserver(watch)
                     observer = null
+                    onReady(false)
                     return@execute
                 }
                 handler.postDelayed(scheduleScan, 1100L)
@@ -101,6 +108,7 @@ internal class ScreenshotMediaMonitor(
 
     fun stop() {
         active = false
+        incompleteRetries = 0
         handler.removeCallbacks(scheduleScan)
         observer?.let {
             try { resolver.unregisterContentObserver(it) } catch (_: Exception) {}
@@ -121,6 +129,7 @@ internal class ScreenshotMediaMonitor(
     private fun scanNewImages() {
         if (!active || scanInFlight) return
         scanInFlight = true
+        var needsRetry = false
         try {
             val idColumn = MediaStore.Images.Media._ID
             val nameColumn = MediaStore.Images.Media.DISPLAY_NAME
@@ -149,10 +158,14 @@ internal class ScreenshotMediaMonitor(
                     val relativePath = if (pathIndex >= 0 && !cursor.isNull(pathIndex))
                         cursor.getString(pathIndex) else null
                     if (!isSavedScreenshot(relativePath, name)) continue
-                    if (cursor.isNull(sizeIndex) || cursor.getLong(sizeIndex) <= 0L) continue
-                    // Never send a half-written image; transient rows are retried
-                    // on the next MediaStore change.
-                    if (pendingIndex >= 0 && cursor.getInt(pendingIndex) != 0) continue
+                    // Samsung may expose a new row before image writing finishes.
+                    // Retry for a bounded window even if no second provider
+                    // notification is emitted, without harvesting older media.
+                    if (cursor.isNull(sizeIndex) || cursor.getLong(sizeIndex) <= 0L ||
+                        (pendingIndex >= 0 && cursor.getInt(pendingIndex) != 0)) {
+                        needsRetry = true
+                        continue
+                    }
                     val uri = ContentUris.withAppendedId(mediaUri, id)
                     if (!active) break
                     // Mark first: observers often fire repeatedly for one screenshot.
@@ -171,6 +184,13 @@ internal class ScreenshotMediaMonitor(
             // Losing media access (permission revoked) must not expose any data.
         } finally {
             scanInFlight = false
+            if (active && needsRetry && incompleteRetries < maxIncompleteRetries) {
+                incompleteRetries++
+                handler.removeCallbacks(scheduleScan)
+                handler.postDelayed(scheduleScan, 1600L)
+            } else if (!needsRetry) {
+                incompleteRetries = 0
+            }
         }
     }
 }
