@@ -349,20 +349,6 @@ module.exports = async (inputData = null) => {
           },
         );
 
-        // Screenshot observer is strictly opt-in, starts after clipboard event
-        // subscription, and shares the existing encrypted image transport.
-        // Old gallery content is never emitted; native observer takes a baseline.
-        if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {
-          try {
-            await ClipboardListener.startScreenshotMonitoring();
-          } catch (_) {
-            await setDataInAsyncStorage(
-              'wsStatusMessage',
-              '⚠️ Screenshot auto-sync requires full photo permission.',
-            );
-          }
-        }
-
         const clearFiles = async (expensiveCall = false) => {
           files_in_memory = null;
           if (!expensiveCall) {
@@ -1588,6 +1574,20 @@ module.exports = async (inputData = null) => {
             await sendClipBoardP2P(clipContent, type_);
           }
         };
+
+        // Start only AFTER sendClipBoard exists: MediaStore callbacks must never
+        // observe an uninitialized JS transport during startup.
+        // Old gallery content is never emitted; native observer takes a baseline.
+        if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {
+          try {
+            await ClipboardListener.startScreenshotMonitoring();
+          } catch (_) {
+            await setDataInAsyncStorage(
+              'wsStatusMessage',
+              '⚠️ Screenshot auto-sync requires full photo permission.',
+            );
+          }
+        }
 
         // terminate service when wsIsRunning is false
         const stopServices = async () => {
