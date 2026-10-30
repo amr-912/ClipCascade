@@ -68,8 +68,15 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
                 }
             }
             screenshotMediaMonitor = monitor
-            monitor.start()
-            promise.resolve(true)
+            monitor.start { registered ->
+                if (registered) {
+                    promise.resolve(true)
+                } else {
+                    screenshotMediaMonitor = null
+                    promise.reject("SCREENSHOT_MONITOR_ERROR",
+                        "Could not initialize screenshot observer. Check photo permissions.")
+                }
+            }
         } catch (_: Exception) {
             screenshotMediaMonitor?.stop()
             screenshotMediaMonitor = null
