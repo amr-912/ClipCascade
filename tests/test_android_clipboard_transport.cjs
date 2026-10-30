@@ -267,3 +267,12 @@ test('ICE network/VPN detection examines both connection and ICE states', () => 
   assert.match(peer, /ice === 'disconnected'/);
   assert.match(peer, /recoverPeerTransport\(remotePeerId, pc\)/);
 });
+
+
+test('screenshot observer can restart after a stopped foreground service', () => {
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ScreenshotMediaMonitor.kt'), 'utf8');
+  assert.match(native, /private var executor = Executors\.newSingleThreadExecutor\(\)/);
+  assert.match(native, /if \(executor\.isShutdown\) executor = Executors\.newSingleThreadExecutor\(\)/);
+  assert.match(native, /executor\.shutdownNow\(\)/);
+});
