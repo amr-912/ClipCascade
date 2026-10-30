@@ -137,12 +137,20 @@ export default function App() {
         const mediaPermission = Platform.Version >= 33
           ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
           : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
-        const result = await PermissionsAndroid.request(mediaPermission, {
-          title: 'Sync new screenshots to your connected PC',
-          message: 'ClipCascade needs photo access to detect newly saved screenshots automatically. It does not upload existing photos or watch other gallery images.',
-          buttonPositive: 'Continue',
-          buttonNegative: 'Not now',
-        });
+        // On Android 14+, explicitly request selected-photo permission
+        // alongside full media read, so we can tell "all photos" from the
+        // temporary selected-only compatibility grant.
+        const result = Platform.Version >= 34
+          ? (await PermissionsAndroid.requestMultiple([
+              mediaPermission,
+              'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
+            ]))[mediaPermission]
+          : await PermissionsAndroid.request(mediaPermission, {
+              title: 'Sync new screenshots to your connected PC',
+              message: 'ClipCascade needs photo access to detect newly saved screenshots automatically. It does not upload existing photos or watch other gallery images.',
+              buttonPositive: 'Continue',
+              buttonNegative: 'Not now',
+            });
         if (result !== PermissionsAndroid.RESULTS.GRANTED) {
           Alert.alert('Screenshot sync not enabled',
             'Choose Allow all photos in Android permissions for automatic future screenshot detection. Selected photos only is insufficient.');
