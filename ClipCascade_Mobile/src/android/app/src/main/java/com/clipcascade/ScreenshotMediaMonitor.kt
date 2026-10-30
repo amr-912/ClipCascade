@@ -130,6 +130,8 @@ internal class ScreenshotMediaMonitor(
         if (!active || scanInFlight) return
         scanInFlight = true
         var needsRetry = false
+        var lastCompletedId = baselineId
+        var earliestIncompleteId: Long? = null
         try {
             val idColumn = MediaStore.Images.Media._ID
             val nameColumn = MediaStore.Images.Media.DISPLAY_NAME
@@ -153,6 +155,7 @@ internal class ScreenshotMediaMonitor(
                 val pendingIndex = cursor.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)
                 while (active && cursor.moveToNext()) {
                     val id = cursor.getLong(idIndex)
+                    if (earliestIncompleteId == null) lastCompletedId = id
                     if (delivered.contains(id)) continue
                     val name = if (cursor.isNull(nameIndex)) null else cursor.getString(nameIndex)
                     val relativePath = if (pathIndex >= 0 && !cursor.isNull(pathIndex))
@@ -164,6 +167,7 @@ internal class ScreenshotMediaMonitor(
                     if (cursor.isNull(sizeIndex) || cursor.getLong(sizeIndex) <= 0L ||
                         (pendingIndex >= 0 && cursor.getInt(pendingIndex) != 0)) {
                         needsRetry = true
+                        if (earliestIncompleteId == null) earliestIncompleteId = id
                         continue
                     }
                     val uri = ContentUris.withAppendedId(mediaUri, id)
@@ -178,6 +182,13 @@ internal class ScreenshotMediaMonitor(
                         baselineId = maxOf(baselineId, floor - 1)
                     }
                     deliver(uri)
+                }
+                // Progress the high-water mark without skipping unfinished
+                // screenshots. Normal camera/gallery additions are never sent.
+                baselineId = if (earliestIncompleteId == null) {
+                    maxOf(baselineId, lastCompletedId)
+                } else {
+                    maxOf(baselineId, earliestIncompleteId!! - 1)
                 }
             }
         } catch (_: Exception) {
