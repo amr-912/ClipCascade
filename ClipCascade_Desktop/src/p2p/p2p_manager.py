@@ -54,6 +54,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         # fragment doesn't leak memory forever.
         self.receiving_fragments: dict = {}
         self.sending_fragment_stats: str = None
+        # Most recent unsent copy only, in RAM, for transient P2P reconnects.
+        self._pending_outbound_clipboard = None
+        self._pending_outbound_ttl_sec = 90
         self.receiving_fragment_stats: str = None
 
         # p2p variables
@@ -72,6 +75,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         self._p2p_shutting_down: bool = False
         # Serialize recover + offer handling per peer (same asyncio loop as signaling handlers).
         self._peer_recovery_locks: Dict[str, asyncio.Lock] = {}
+        # Transient VPN/network changes should not tear down active channels
+        # immediately. Runs only on the asyncio signaling loop.
+        self._peer_disconnect_grace_handles: Dict[str, asyncio.TimerHandle] = {}
         self._dc_heartbeat_handle: Optional[asyncio.TimerHandle] = None
 
         # Event loop for asyncio
@@ -363,6 +369,7 @@ class P2PManager(ReconnectMixin, WSInterface):
         """
         try:
             self.clipboard_manager.previous_clipboard_hash = 0
+            self._pending_outbound_clipboard = None
             self.first_conn_lost = True
 
             # Close the websocket
@@ -385,6 +392,9 @@ class P2PManager(ReconnectMixin, WSInterface):
     async def _cleanup_peer_connections(self, clear_bootstrap_state: bool = True):
         self._p2p_shutting_down = True
         self._cancel_dc_heartbeat()
+        for timer in self._peer_disconnect_grace_handles.values():
+            timer.cancel()
+        self._peer_disconnect_grace_handles.clear()
         self.reset_receiving_fragments()
         try:
             try:
@@ -454,6 +464,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         # Find which peers are no longer present
         stale_ids = set(self.peer_connections.keys()) - updated_peers
         for old_pid in stale_ids:
+            timer = self._peer_disconnect_grace_handles.pop(old_pid, None)
+            if timer is not None:
+                timer.cancel()
             logging.debug(f"Removing stale peer: {old_pid}")
             self._peer_recovery_locks.pop(old_pid, None)
             # Close data channel
@@ -483,6 +496,9 @@ class P2PManager(ReconnectMixin, WSInterface):
 
     async def _dispose_peer_connection(self, peer_id: str) -> None:
         """Close and drop one peer's DC/PC without changing self.peers (used by recovery and offer handling)."""
+        timer = self._peer_disconnect_grace_handles.pop(peer_id, None)
+        if timer is not None:
+            timer.cancel()
         dc = self.data_channels.pop(peer_id, None)
         if dc is not None:
             try:
@@ -585,14 +601,43 @@ class P2PManager(ReconnectMixin, WSInterface):
                     }
                 )
 
-        @pc.on("connectionstatechange")
-        def on_connectionstatechange():
+        def on_transport_state_change():
+            if self._p2p_shutting_down or self.peer_connections.get(remote_peer_id) is not pc:
+                return
             try:
                 state = pc.connectionState
+                ice = pc.iceConnectionState
             except Exception:
                 return
-            if state in ("failed", "closed"):
+            if state in ("failed", "closed") or ice == "failed":
+                timer = self._peer_disconnect_grace_handles.pop(remote_peer_id, None)
+                if timer is not None:
+                    timer.cancel()
                 self.schedule_task(self._recover_peer_transport(remote_peer_id, pc))
+            elif state == "disconnected" or ice == "disconnected":
+                if remote_peer_id not in self._peer_disconnect_grace_handles:
+                    def recover_if_still_disconnected():
+                        self._peer_disconnect_grace_handles.pop(remote_peer_id, None)
+                        if self.peer_connections.get(remote_peer_id) is pc and (
+                            pc.connectionState == "disconnected" or
+                            pc.iceConnectionState == "disconnected"
+                        ):
+                            self.schedule_task(self._recover_peer_transport(remote_peer_id, pc))
+                    self._peer_disconnect_grace_handles[remote_peer_id] = (
+                        self.loop.call_later(15.0, recover_if_still_disconnected)
+                    )
+            else:
+                timer = self._peer_disconnect_grace_handles.pop(remote_peer_id, None)
+                if timer is not None:
+                    timer.cancel()
+
+        @pc.on("connectionstatechange")
+        def on_connectionstatechange():
+            on_transport_state_change()
+
+        @pc.on("iceconnectionstatechange")
+        def on_iceconnectionstatechange():
+            on_transport_state_change()
 
         @pc.on("datachannel")
         def on_datachannel(channel):
@@ -718,9 +763,11 @@ class P2PManager(ReconnectMixin, WSInterface):
         @channel.on("open")
         def on_open():
             self._sync_live_connections_count()
+            self.schedule_task(self._flush_pending_clipboard())
 
         if channel.readyState == "open":
             self._sync_live_connections_count()
+            self.schedule_task(self._flush_pending_clipboard())
 
         @channel.on("message")
         def on_message(message):
@@ -738,6 +785,23 @@ class P2PManager(ReconnectMixin, WSInterface):
 
     def send(self, payload: str, payload_type: str = "text"):
         self.schedule_task(self._send(payload, payload_type))
+
+    def _remember_pending_clipboard(self, payload: str, payload_type: str) -> None:
+        """Keep latest unsent copy only; no filesystem persistence or logs."""
+        if len(payload) <= 24 * 1024 * 1024:
+            self._pending_outbound_clipboard = (payload, payload_type, time.monotonic())
+
+    async def _flush_pending_clipboard(self):
+        pending = self._pending_outbound_clipboard
+        if pending is None:
+            return
+        if (time.monotonic() - pending[2]) > self._pending_outbound_ttl_sec:
+            self._pending_outbound_clipboard = None
+            return
+        if not any(getattr(ch, "readyState", "") == "open" for ch in self.data_channels.values()):
+            return
+        self._pending_outbound_clipboard = None
+        await self._send(pending[0], pending[1])
 
     def reset_sending_fragment_id(self):
         self.sending_fragment_id = ""
@@ -765,6 +829,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         return True
 
     async def _send(self, payload: str, payload_type: str = "text"):
+        original_payload = payload
+        previous_hash = None
+        sent_hash = None
         try:
             channels = [
                 (peer_id, channel)
@@ -772,14 +839,17 @@ class P2PManager(ReconnectMixin, WSInterface):
                 if getattr(channel, "readyState", "") == "open"
             ]
             if not channels:
-                logging.warning("Clipboard outbound %s not transmitted: no open P2P data channel", payload_type)
+                self._remember_pending_clipboard(original_payload, payload_type)
+                logging.warning("Clipboard outbound %s deferred: no open P2P data channel", payload_type)
                 return  # Do not record payload hash as delivered.
 
+            previous_hash = self.clipboard_manager.previous_clipboard_hash
             if not self.clipboard_manager.has_clipboard_changed(payload):
                 return
+            sent_hash = self.clipboard_manager.previous_clipboard_hash
 
             self.reset_sending_fragment_id()
-            self.reset_receiving_fragments()
+            # Incoming copy should not be cancelled by unrelated outbound copy.
             raw_payload_size_in_bytes = len(payload.encode("utf-8"))
 
             if self.config.data["cipher_enabled"]:
@@ -817,6 +887,9 @@ class P2PManager(ReconnectMixin, WSInterface):
                         lambda: self.sending_fragment_id != metadata["id"]
                     )
                     if not ok:
+                        self._remember_pending_clipboard(original_payload, payload_type)
+                        if self.clipboard_manager.previous_clipboard_hash == sent_hash:
+                            self.clipboard_manager.previous_clipboard_hash = previous_hash
                         logging.warning(
                             "P2P outbound %s incomplete: data channel to peer no longer ready",
                             payload_type
@@ -829,8 +902,14 @@ class P2PManager(ReconnectMixin, WSInterface):
                     )
             # These chunks have been queued, not acknowledged by the receiver.
             logging.info("P2P outbound %s queued all %d fragments", payload_type, len(fragments))
+            if (self._pending_outbound_clipboard is not None and
+                    self._pending_outbound_clipboard[0] == original_payload):
+                self._pending_outbound_clipboard = None
             self.reset_sending_fragment_id()
         except Exception as e:
+            self._remember_pending_clipboard(original_payload, payload_type)
+            if sent_hash is not None and self.clipboard_manager.previous_clipboard_hash == sent_hash:
+                self.clipboard_manager.previous_clipboard_hash = previous_hash
             logging.error("Failed to send %s clipboard data: %s", payload_type, e)
 
     def reset_receiving_fragments(self):
@@ -862,7 +941,7 @@ class P2PManager(ReconnectMixin, WSInterface):
             body = json.loads(frame)
             if isinstance(body, dict) and body.get("_cc_keepalive") is True:
                 return
-            self.reset_sending_fragment_id()
+            # Never cancel a local transfer because a remote fragment arrived.
             payload = body["payload"]
             payload_type = body.get("type", "text")
             metadata = body.get("metadata")

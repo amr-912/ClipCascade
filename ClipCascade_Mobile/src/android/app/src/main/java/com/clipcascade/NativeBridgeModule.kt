@@ -70,24 +70,55 @@ class NativeBridgeModule(reactContext: ReactApplicationContext) : ReactContextBa
     @ReactMethod
     fun getFileSize(contentUri: String, promise: Promise) {
         try {
-            val trimmedUri = contentUri.trim()
-            val uri = Uri.parse(trimmedUri)
-            var size: Long = -1
-            val projection = arrayOf(OpenableColumns.SIZE)
-
-            reactApplicationContext.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                val sizeIndex = cursor.getColumnIndexOrThrow(OpenableColumns.SIZE)
-                if (cursor.moveToFirst()) {
-                    size = cursor.getLong(sizeIndex)
+            val uri = Uri.parse(contentUri.trim())
+            val resolver = reactApplicationContext.contentResolver
+            var size = -1L
+            // Some clipboard providers expose a readable stream but no
+            // OpenableColumns.SIZE; this is common for transient content URIs.
+            try {
+                resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                    val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (index >= 0 && cursor.moveToFirst() && !cursor.isNull(index)) {
+                        size = cursor.getLong(index)
+                    }
+                }
+            } catch (_: Exception) {
+                // Provider metadata is advisory. Attempt an actual stream below.
+            }
+            if (size < 0) {
+                try {
+                    resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+                        if (descriptor.length >= 0) size = descriptor.length
+                    }
+                } catch (_: Exception) {}
+            }
+            if (size < 0) {
+                // Do not materialize unknown-length content in memory just to
+                // discover its size; stream-count at most 32 MiB.
+                val maxProbe = 32L * 1024 * 1024
+                resolver.openInputStream(uri)?.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        total += n
+                        if (total > maxProbe) {
+                            promise.reject("SIZE_TOO_LARGE", "Unknown-length clipboard item exceeds probe limit.")
+                            return
+                        }
+                    }
+                    size = total
                 }
             }
-            if (size == -1L) {
-                promise.reject("ERROR", "Failed to get file size: -1 for URI: ${trimmedUri}")
-                return
-            } 
-            promise.resolve(size.toString())
-        } catch (e: Exception) {
-            promise.reject("ERROR", "Failed to get file size: ${e.message}")
+            if (size < 0) {
+                promise.reject("SIZE_UNAVAILABLE", "Clipboard item URI has no readable size.")
+            } else {
+                promise.resolve(size.toString())
+            }
+        } catch (_: Exception) {
+            // Do not put the URI or provider's exception message in user logs.
+            promise.reject("SIZE_UNAVAILABLE", "Clipboard item size could not be accessed.")
         }
     }
 
@@ -128,6 +159,41 @@ class NativeBridgeModule(reactContext: ReactApplicationContext) : ReactContextBa
             }
         } catch (e: Exception) {
             promise.reject("ERROR", "Failed to get file bytes: ${e.message}")
+        }
+    }
+
+    /**
+     * Safe outbound screenshot path: cap RAM use and never log private URI
+     * strings or image bytes. Images beyond 32 MiB fail explicitly.
+     */
+    @ReactMethod
+    fun getClipboardImageAsBase64(contentUri: String, promise: Promise) {
+        try {
+            val uri = Uri.parse(contentUri.trim())
+            val maxImageBytes = 32L * 1024 * 1024
+            val output = ByteArrayOutputStream()
+            val stream = reactApplicationContext.contentResolver.openInputStream(uri)
+            if (stream == null) {
+                promise.reject("IMAGE_NOT_READABLE", "Clipboard image provider did not supply a stream.")
+                return
+            }
+            stream.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    total += n
+                    if (total > maxImageBytes) {
+                        promise.reject("IMAGE_TOO_LARGE", "Clipboard image exceeds 32 MiB safety limit.")
+                        return
+                    }
+                    output.write(buffer, 0, n)
+                }
+            }
+            promise.resolve(Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP))
+        } catch (_: Exception) {
+            promise.reject("IMAGE_NOT_READABLE", "Clipboard image URI could not be read.")
         }
     }
 
@@ -175,7 +241,7 @@ class NativeBridgeModule(reactContext: ReactApplicationContext) : ReactContextBa
             val imageUri: Uri = FileProvider.getUriForFile(reactApplicationContext, authority, cacheFile)
 
             // Copy the URI to clipboard
-            val clipData = ClipData.newUri(reactApplicationContext.contentResolver, "Image", imageUri)
+            val clipData = ClipData.newUri(reactApplicationContext.contentResolver, CLIPCASCADE_REMOTE_IMAGE_LABEL, imageUri)
             val clipboard = reactApplicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(clipData)
 

@@ -85,6 +85,30 @@ android {
         versionCode 30300
         versionName "3.3.0"
     }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                // Required by Robolectric when tests run on Java 17+.
+                jvmArgs += [
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "--add-opens=java.base/java.io=ALL-UNNAMED",
+                    "--add-opens=java.base/java.net=ALL-UNNAMED",
+                    "--add-opens=java.base/java.security=ALL-UNNAMED",
+                    "--add-opens=java.base/java.text=ALL-UNNAMED",
+                    "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED"
+                ]
+                testLogging {
+                    events "failed"
+                    exceptionFormat "full"
+                    showStackTraces true
+                }
+            }
+        }
+    }
     signingConfigs {
         debug {
             storeFile file('debug.keystore')
@@ -104,6 +128,15 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+        }
+        // Standalone test build: never replaces the official signed app.
+        // Only suitable for device validation; not for production distribution.
+        preview {
+            initWith release
+            applicationIdSuffix ".preview"
+            versionNameSuffix "-preview"
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
         }
         release {
             // Caution! In production, you need to generate your own keystore file.
@@ -131,6 +164,10 @@ dependencies {
 
     // Guava
     implementation "com.google.guava:guava:33.4.8-android"
+
+    // Exercise real ClipboardManager/ClipData MIME behavior on the JVM.
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.17"
 
     // WorkManager
     implementation "androidx.work:work-runtime-ktx:2.10.3"

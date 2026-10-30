@@ -58,7 +58,6 @@ module.exports = async (inputData = null) => {
 
         let previous_clipboard_content_hash = '';
         let toggle = false; // p2s toggle
-        let block_image_once = false;
         let files_in_memory = null;
         let websocket_status_notification_toggle = false;
         let p2pMsg = null; // p2p status message
@@ -325,6 +324,10 @@ module.exports = async (inputData = null) => {
 
         //clipboard monitor
         const { ClipboardListener } = NativeModules;
+        // In-memory stage counters; never pass clipboard payloads or URI strings.
+        const noteClipboardStage = stage => {
+          try { ClipboardListener?.recordTransportStage?.(stage); } catch (_) {}
+        };
         const clipboardListener = new NativeEventEmitter(ClipboardListener);
         // start clipboard listening
         ClipboardListener.startListening();
@@ -334,6 +337,7 @@ module.exports = async (inputData = null) => {
           async params => {
             try {
               if (params && params.content && params.type) {
+                noteClipboardStage('js-' + params.type);
                 await sendClipBoard(params.content, params.type);
               }
             } catch (e) {
@@ -344,6 +348,20 @@ module.exports = async (inputData = null) => {
             }
           },
         );
+
+        // Screenshot observer is strictly opt-in, starts after clipboard event
+        // subscription, and shares the existing encrypted image transport.
+        // Old gallery content is never emitted; native observer takes a baseline.
+        if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {
+          try {
+            await ClipboardListener.startScreenshotMonitoring();
+          } catch (_) {
+            await setDataInAsyncStorage(
+              'wsStatusMessage',
+              '⚠️ Screenshot auto-sync requires full photo permission.',
+            );
+          }
+        }
 
         const clearFiles = async (expensiveCall = false) => {
           files_in_memory = null;
@@ -447,7 +465,6 @@ module.exports = async (inputData = null) => {
                           await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(
                             cb,
                           );
-                          block_image_once = true;
                         } else if (type_ === 'files') {
                           await showFilesDownloadNotification(
                             '📥 Download File(s)',
@@ -484,25 +501,21 @@ module.exports = async (inputData = null) => {
               }
             },
             onDisconnect: async () => {
-              block_image_once = false;
               await setDataInAsyncStorage('wsStatusMessage', 'Disconnected');
             },
             onStompError: async frame => {
-              block_image_once = false;
               await setDataInAsyncStorage(
                 'wsStatusMessage',
                 '❌ STOMP Error: ' + JSON.stringify(frame, null, 2),
               );
             },
             onWebSocketError: async event => {
-              block_image_once = false;
               await setDataInAsyncStorage(
                 'wsStatusMessage',
                 '❌ WebSocket Error: ' + JSON.stringify(event, null, 2),
               );
             },
             onWebSocketClose: async event => {
-              block_image_once = false;
               const reason = event?.reason || 'closed by client';
               await setDataInAsyncStorage(
                 'wsStatusMessage',
@@ -542,7 +555,7 @@ module.exports = async (inputData = null) => {
                 ) {
                   // base64 encode
                   if (type_ === 'image') {
-                    clipContent = await NativeBridgeModule.getFileAsBase64(
+                    clipContent = await NativeBridgeModule.getClipboardImageAsBase64(
                       clipContent,
                     );
                   } else if (type_ === 'files') {
@@ -563,9 +576,7 @@ module.exports = async (inputData = null) => {
                   if (await newCB(hcb)) {
                     previous_clipboard_content_hash = hcb;
 
-                    if (block_image_once) {
-                      block_image_once = false;
-                    } else {
+                    
                       toggle = true;
 
                       if (cipher_enabled === 'true') {
@@ -586,13 +597,12 @@ module.exports = async (inputData = null) => {
                           type: type_,
                         }),
                       });
-                    }
+                    
                   }
                 }
               }
             } catch (e) {
               toggle = false;
-              block_image_once = false;
               throw e;
             }
           };
@@ -649,7 +659,34 @@ module.exports = async (inputData = null) => {
           let p2pShuttingDown = false;
           const peerOpChains = {};
           const dataChannelHeartbeatTimers = {};
+          const peerDisconnectGraceTimers = {};
           const P2P_DC_KEEPALIVE_JSON = JSON.stringify({ _cc_keepalive: true });
+          // Only the latest copy is retained in RAM when signaling is up but
+          // the actual data channel is not ready. Never persist clipboard data.
+          const PENDING_CLIPBOARD_TTL_MS = 90000;
+          let pendingOutboundClipboard = null;
+
+          const queueLatestClipboard = (content, type) => {
+            if (typeof content !== 'string') return;
+            // Limit pending memory: this is a short-lived clipboard, not history.
+            if (content.length > 24 * 1024 * 1024) return;
+            pendingOutboundClipboard = {content, type, savedAt: Date.now()};
+          };
+
+          const flushPendingClipboard = async () => {
+            const pending = pendingOutboundClipboard;
+            if (!pending) return;
+            if (Date.now() - pending.savedAt > PENDING_CLIPBOARD_TTL_MS) {
+              pendingOutboundClipboard = null;
+              return;
+            }
+            if (!Object.values(dataChannels).some(ch => ch && ch.readyState === 'open')) return;
+            pendingOutboundClipboard = null;
+            // The function is assigned before a DataChannel opens; no reentrant
+            // recursion when no peer is ready.
+            await sendClipBoardP2P(pending.content, pending.type, true);
+          };
+
 
           // Fragment variables
           let sendingFragmentId = '';
@@ -744,6 +781,10 @@ module.exports = async (inputData = null) => {
                 clearInterval(dataChannelHeartbeatTimers[id]);
                 delete dataChannelHeartbeatTimers[id];
               }
+              for (const id of Object.keys(peerDisconnectGraceTimers)) {
+                clearTimeout(peerDisconnectGraceTimers[id]);
+                delete peerDisconnectGraceTimers[id];
+              }
               for (const [, dc] of Object.entries(dataChannels)) {
                 if (dc) {
                   try {
@@ -765,6 +806,7 @@ module.exports = async (inputData = null) => {
                     pc.onicecandidate = null;
                     pc.ondatachannel = null;
                     pc.onconnectionstatechange = null;
+                    pc.oniceconnectionstatechange = null;
                     pc.close();
                   } catch (e) {
                     // no-op
@@ -856,7 +898,6 @@ module.exports = async (inputData = null) => {
               };
 
               wsSignalingClient.onerror = async event => {
-                block_image_once = false;
                 await setDataInAsyncStorage(
                   'wsStatusMessage',
                   '❌ WebSocket Error: ' + JSON.stringify(event, null, 2),
@@ -864,7 +905,6 @@ module.exports = async (inputData = null) => {
               };
 
               wsSignalingClient.onclose = async event => {
-                block_image_once = false;
                 const reason = event?.reason || 'closed by client';
                 await setDataInAsyncStorage(
                   'wsStatusMessage',
@@ -899,115 +939,137 @@ module.exports = async (inputData = null) => {
           initializeWebSocketSignalingClient();
 
           // send clipboard content P2P
-          sendClipBoardP2P = async (clipContent, type_ = 'text') => {
+          sendClipBoardP2P = async (clipContent, type_ = 'text', replay = false) => {
+            const originalContent = clipContent;
             try {
+              if (!replay) {
+                // The most recent user copy supersedes a stale pending copy.
+                pendingOutboundClipboard = null;
+              }
               await clearFiles();
               if (
                 (type_ === 'image' && enable_image_sharing === 'false') ||
                 (type_ === 'files' && enable_file_sharing === 'false')
-              ) {
+              ) return;
+
+              if (!(await validateClipboardSize(clipContent, type_, 'Outbound'))) {
                 return;
               }
 
-              if (await validateClipboardSize(clipContent, type_, 'Outbound')) {
-                // base64 encode
-                if (type_ === 'image') {
-                  clipContent = await NativeBridgeModule.getFileAsBase64(
-                    clipContent,
-                  );
-                } else if (type_ === 'files') {
-                  temp = {};
-                  const file_paths = clipContent
-                    .split(',')
-                    .filter(item => item.trim() !== '');
+              // Signaling may say Connected while WebRTC has no usable channel.
+              // In that case keep the latest copy briefly; importantly, do not
+              // update previous_clipboard_content_hash until it has been queued.
+              let openChannels = Object.values(dataChannels).filter(
+                ch => ch && ch.readyState === 'open',
+              );
+              if (openChannels.length === 0) {
+                queueLatestClipboard(originalContent, type_);
+                noteClipboardStage('p2p-' + type_ + '-pending');
+                p2pMsg = '⏳ Clipboard pending: waiting for P2P data channel';
+                await p2pStatusMessageChanged();
+                return;
+              }
 
-                  for (const file_path of file_paths) {
-                    temp[await NativeBridgeModule.getFileName(file_path)] =
-                      await NativeBridgeModule.getFileAsBase64(file_path);
-                  }
-                  clipContent = JSON.stringify(temp);
+              if (type_ === 'image') {
+                clipContent = await NativeBridgeModule.getClipboardImageAsBase64(clipContent);
+              } else if (type_ === 'files') {
+                const temp = {};
+                const filePaths = clipContent.split(',').filter(p => p.trim() !== '');
+                for (const filePath of filePaths) {
+                  temp[await NativeBridgeModule.getFileName(filePath)] =
+                    await NativeBridgeModule.getFileAsBase64(filePath);
                 }
+                clipContent = JSON.stringify(temp);
+              }
 
-                // clipboad content hash
-                const hcb = await hashCB(clipContent);
-                if (await newCB(hcb)) {
-                  previous_clipboard_content_hash = hcb;
+              const hcb = await hashCB(clipContent);
+              if (!(await newCB(hcb))) return;
 
-                  if (block_image_once) {
-                    block_image_once = false;
-                  } else {
-                    await resetSendingFragmentId();
-                    await resetReceivingFragments();
+              const rawPayloadSizeInBytes = textEncoder.encode(clipContent).length;
+              if (cipher_enabled === 'true') {
+                clipContent = await encrypt(clipContent);
+              }
+              const fragments = await fragmentString(clipContent, FRAGMENT_SIZE);
+              const metadata = {
+                id: await generateUuid(),
+                isFragmented: fragments.length > 1,
+                index: 0,
+                totalFragments: fragments.length,
+                combinedRawPayloadSizeInBytes: rawPayloadSizeInBytes,
+              };
 
-                    const rawPayloadSizeInBytes =
-                      textEncoder.encode(clipContent).length;
+              // A new *local* copy may replace the old outbound. Incoming
+              // fragments must never cancel an unrelated outbound transfer.
+              await resetSendingFragmentId();
+              sendingFragmentId = metadata.id;
+              const deadline = Date.now() + 120000;
 
-                    if (cipher_enabled === 'true') {
-                      //ecrypt
-                      clipContent = await encrypt(clipContent);
-                    }
+              try {
+                for (const fragment of fragments) {
+                  if (sendingFragmentId !== metadata.id) return;
 
-                    // fragment payload
-                    const fragments = await fragmentString(
-                      clipContent,
-                      FRAGMENT_SIZE,
-                    );
+                  const messageJson = JSON.stringify({
+                    payload: fragment,
+                    type: type_,
+                    metadata,
+                  });
+                  metadata.index += 1;
 
-                    const metadata = {
-                      id: await generateUuid(),
-                      isFragmented: fragments.length > 1,
-                      index: 0,
-                      totalFragments: fragments.length,
-                      combinedRawPayloadSizeInBytes: rawPayloadSizeInBytes,
-                    };
-
-                    let loopBroken = false;
-                    sendingFragmentId = metadata.id;
-                    for (let i = 0; i < fragments.length; i++) {
-                      if (sendingFragmentId != metadata.id) {
-                        loopBroken = true;
+                  // Send to every live channel, not async forEach (which
+                  // discards rejected promises and cannot enforce ordering).
+                  openChannels = Object.values(dataChannels).filter(
+                    ch => ch && ch.readyState === 'open',
+                  );
+                  if (openChannels.length === 0) {
+                    queueLatestClipboard(originalContent, type_);
+                    p2pMsg = '⏳ Clipboard pending: peer disconnected during send';
+                    await p2pStatusMessageChanged();
+                    return;
+                  }
+                  for (const channel of openChannels) {
+                    while (typeof channel.bufferedAmount === 'number' &&
+                      channel.bufferedAmount >= 256 * 1024) {
+                      if (sendingFragmentId !== metadata.id ||
+                          channel.readyState !== 'open') {
+                        queueLatestClipboard(originalContent, type_);
                         return;
                       }
-
-                      const fragment = fragments[i];
-
-                      const messageJson = JSON.stringify({
-                        payload: fragment,
-                        type: type_,
-                        metadata: metadata,
-                      });
-                      metadata.index += 1;
-
-                      // send to all open DataChannels
-                      Object.entries(dataChannels).forEach(
-                        async ([peerId, channel]) => {
-                          if (channel.readyState === 'open') {
-                            await channel.send(messageJson);
-                          }
-                        },
-                      );
-
-                      // Update stats
-                      if (metadata.isFragmented) {
-                        sendingFragmentStats = `${metadata.index}/${metadata.totalFragments}`;
-                        await p2pStatusMessageChanged();
+                      if (Date.now() >= deadline) {
+                        throw new Error('P2P DataChannel buffer did not drain');
                       }
+                      await sleep(20);
                     }
-                    if (!loopBroken) {
-                      await resetSendingFragmentId();
+                    if (channel.readyState !== 'open') {
+                      queueLatestClipboard(originalContent, type_);
+                      return;
                     }
+                    await channel.send(messageJson);
                   }
+                  if (metadata.isFragmented) {
+                    sendingFragmentStats = `${metadata.index}/${metadata.totalFragments}`;
+                    await p2pStatusMessageChanged();
+                  }
+                }
+                // DataChannel.send only queues chunks: this does NOT imply
+                // application-level acknowledgement by the receiving device.
+                previous_clipboard_content_hash = hcb;
+                noteClipboardStage('p2p-' + type_ + '-queued');
+              } finally {
+                if (sendingFragmentId === metadata.id) {
+                  await resetSendingFragmentId();
                 }
               }
             } catch (e) {
-              block_image_once = false;
-              p2pMsg = '❌ P2P Outbound Error: ' + JSON.stringify(e, null, 2);
+              queueLatestClipboard(originalContent, type_);
+              noteClipboardStage('p2p-' + type_ + '-error');
+              p2pMsg = '❌ P2P Outbound Error: ' + String(e?.message || e);
               await p2pStatusMessageChanged();
             }
           };
 
           // stop events and connection P2P
           stopServicesP2P = async () => {
+            pendingOutboundClipboard = null;
             // 1) Stop listening to clipboard events
             try {
               await ClipboardListener.stopListening();
@@ -1071,9 +1133,9 @@ module.exports = async (inputData = null) => {
                 return;
               }
 
-              await clearFiles((expensiveCall = true));
-              await resetSendingFragmentId();
-
+              await clearFiles(true);
+              // Incoming transfer must not cancel an unrelated outbound
+              // clipboard operation (simultaneous bidirectional copying).
               let cb = String(message.payload);
               const type_ = message.type ?? 'text';
               const metadata = message.metadata;
@@ -1162,7 +1224,6 @@ module.exports = async (inputData = null) => {
                     await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(
                       cb,
                     );
-                    block_image_once = true;
                   } else if (type_ === 'files') {
                     await showFilesDownloadNotification('📥 Download File(s)');
 
@@ -1222,6 +1283,10 @@ module.exports = async (inputData = null) => {
             // 2) For each stale peer, close data channel and peer connection
             for (const oldPid of stalePeerIds) {
               delete peerOpChains[oldPid];
+              if (peerDisconnectGraceTimers[oldPid]) {
+                clearTimeout(peerDisconnectGraceTimers[oldPid]);
+                delete peerDisconnectGraceTimers[oldPid];
+              }
               if (dataChannelHeartbeatTimers[oldPid]) {
                 clearInterval(dataChannelHeartbeatTimers[oldPid]);
                 delete dataChannelHeartbeatTimers[oldPid];
@@ -1251,6 +1316,10 @@ module.exports = async (inputData = null) => {
           };
 
           const disposePeerConnection = async peerId => {
+            if (peerDisconnectGraceTimers[peerId]) {
+              clearTimeout(peerDisconnectGraceTimers[peerId]);
+              delete peerDisconnectGraceTimers[peerId];
+            }
             if (dataChannelHeartbeatTimers[peerId]) {
               clearInterval(dataChannelHeartbeatTimers[peerId]);
               delete dataChannelHeartbeatTimers[peerId];
@@ -1274,6 +1343,7 @@ module.exports = async (inputData = null) => {
                 pc.onicecandidate = null;
                 pc.ondatachannel = null;
                 pc.onconnectionstatechange = null;
+                    pc.oniceconnectionstatechange = null;
                 pc.close();
               } catch (e) {
                 // no-op
@@ -1312,12 +1382,36 @@ module.exports = async (inputData = null) => {
               await setupDataChannel(remotePeerId, channel);
             };
 
-            pc.onconnectionstatechange = () => {
+            const checkPeerConnectivity = () => {
               const st = pc.connectionState;
-              if (st === 'failed' || st === 'closed') {
+              const ice = pc.iceConnectionState;
+              // Some Android VPN/network transitions first surface in ICE
+              // state, before RTCPeerConnection.connectionState updates.
+              if ((st === 'disconnected' || ice === 'disconnected') &&
+                  !peerDisconnectGraceTimers[remotePeerId]) {
+                // A VPN/network switch may keep ICE 'disconnected' without
+                // closing WebSocket. Allow transient routing changes to heal.
+                peerDisconnectGraceTimers[remotePeerId] = setTimeout(() => {
+                  delete peerDisconnectGraceTimers[remotePeerId];
+                  if (!p2pShuttingDown &&
+                      peerConnections[remotePeerId] === pc &&
+                      (pc.connectionState === 'disconnected' ||
+                       pc.iceConnectionState === 'disconnected')) {
+                    recoverPeerTransport(remotePeerId, pc);
+                  }
+                }, 15000);
+              } else if (st !== 'disconnected' && ice !== 'disconnected') {
+                if (peerDisconnectGraceTimers[remotePeerId]) {
+                  clearTimeout(peerDisconnectGraceTimers[remotePeerId]);
+                  delete peerDisconnectGraceTimers[remotePeerId];
+                }
+              }
+              if (st === 'failed' || st === 'closed' || ice === 'failed') {
                 recoverPeerTransport(remotePeerId, pc);
               }
             };
+            pc.onconnectionstatechange = checkPeerConnectivity;
+            pc.oniceconnectionstatechange = checkPeerConnectivity;
 
             return pc;
           };
@@ -1457,6 +1551,7 @@ module.exports = async (inputData = null) => {
             channel.onopen = async () => {
               startDataChannelHeartbeat(remotePeerId, channel);
               await syncLiveConnectionsCount();
+              await flushPendingClipboard();
             };
 
             channel.onmessage = async e => {
@@ -1480,6 +1575,7 @@ module.exports = async (inputData = null) => {
             if (channel.readyState === 'open') {
               startDataChannelHeartbeat(remotePeerId, channel);
               await syncLiveConnectionsCount();
+              await flushPendingClipboard();
             }
           };
         }
