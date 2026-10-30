@@ -37,7 +37,7 @@ internal class ScreenshotMediaMonitor(
     private val resolver: ContentResolver = context.contentResolver
     private val mediaUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
     private val handler = Handler(Looper.getMainLooper())
-    private val executor = Executors.newSingleThreadExecutor()
+    private var executor = Executors.newSingleThreadExecutor()
     private val delivered = mutableSetOf<Long>()
     @Volatile private var active = false
     @Volatile private var observer: ContentObserver? = null
@@ -63,6 +63,7 @@ internal class ScreenshotMediaMonitor(
             onReady(true)
             return
         }
+        if (executor.isShutdown) executor = Executors.newSingleThreadExecutor()
         active = true
         executor.execute {
             try {
