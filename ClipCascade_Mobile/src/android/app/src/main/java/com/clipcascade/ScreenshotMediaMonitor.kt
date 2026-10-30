@@ -1,6 +1,9 @@
 package com.clipcascade
 
 import android.content.ContentResolver
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import android.content.ContentUris
 import android.content.Context
 import android.database.ContentObserver
@@ -128,6 +131,14 @@ internal class ScreenshotMediaMonitor(
 
     private fun scanNewImages() {
         if (!active || scanInFlight) return
+        val readPermission = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(context, readPermission) != PackageManager.PERMISSION_GRANTED) {
+            // If media access was revoked in Settings (or the selected-only
+            // temporary grant expired), stop rather than silently scanning.
+            stop()
+            return
+        }
         scanInFlight = true
         var needsRetry = false
         var lastCompletedId = baselineId
