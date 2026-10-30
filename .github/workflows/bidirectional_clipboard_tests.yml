@@ -1,6 +1,9 @@
 name: Bidirectional clipboard reliability (Android + Windows)
 
 on:
+  push:
+    branches:
+      - 'test/screenshot-preview-release-2026-10-30'
   pull_request:
     paths:
       - 'ClipCascade_Mobile/src/StartForegroundService.js'
