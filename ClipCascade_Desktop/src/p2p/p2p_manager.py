@@ -75,6 +75,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         self._p2p_shutting_down: bool = False
         # Serialize recover + offer handling per peer (same asyncio loop as signaling handlers).
         self._peer_recovery_locks: Dict[str, asyncio.Lock] = {}
+        # Transient VPN/network changes should not tear down active channels
+        # immediately. Runs only on the asyncio signaling loop.
+        self._peer_disconnect_grace_handles: Dict[str, asyncio.TimerHandle] = {}
         self._dc_heartbeat_handle: Optional[asyncio.TimerHandle] = None
 
         # Event loop for asyncio
@@ -389,6 +392,9 @@ class P2PManager(ReconnectMixin, WSInterface):
     async def _cleanup_peer_connections(self, clear_bootstrap_state: bool = True):
         self._p2p_shutting_down = True
         self._cancel_dc_heartbeat()
+        for timer in self._peer_disconnect_grace_handles.values():
+            timer.cancel()
+        self._peer_disconnect_grace_handles.clear()
         self.reset_receiving_fragments()
         try:
             try:
@@ -458,6 +464,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         # Find which peers are no longer present
         stale_ids = set(self.peer_connections.keys()) - updated_peers
         for old_pid in stale_ids:
+            timer = self._peer_disconnect_grace_handles.pop(old_pid, None)
+            if timer is not None:
+                timer.cancel()
             logging.debug(f"Removing stale peer: {old_pid}")
             self._peer_recovery_locks.pop(old_pid, None)
             # Close data channel
@@ -487,6 +496,9 @@ class P2PManager(ReconnectMixin, WSInterface):
 
     async def _dispose_peer_connection(self, peer_id: str) -> None:
         """Close and drop one peer's DC/PC without changing self.peers (used by recovery and offer handling)."""
+        timer = self._peer_disconnect_grace_handles.pop(peer_id, None)
+        if timer is not None:
+            timer.cancel()
         dc = self.data_channels.pop(peer_id, None)
         if dc is not None:
             try:
@@ -589,14 +601,43 @@ class P2PManager(ReconnectMixin, WSInterface):
                     }
                 )
 
-        @pc.on("connectionstatechange")
-        def on_connectionstatechange():
+        def on_transport_state_change():
+            if self._p2p_shutting_down or self.peer_connections.get(remote_peer_id) is not pc:
+                return
             try:
                 state = pc.connectionState
+                ice = pc.iceConnectionState
             except Exception:
                 return
-            if state in ("failed", "closed"):
+            if state in ("failed", "closed") or ice == "failed":
+                timer = self._peer_disconnect_grace_handles.pop(remote_peer_id, None)
+                if timer is not None:
+                    timer.cancel()
                 self.schedule_task(self._recover_peer_transport(remote_peer_id, pc))
+            elif state == "disconnected" or ice == "disconnected":
+                if remote_peer_id not in self._peer_disconnect_grace_handles:
+                    def recover_if_still_disconnected():
+                        self._peer_disconnect_grace_handles.pop(remote_peer_id, None)
+                        if self.peer_connections.get(remote_peer_id) is pc and (
+                            pc.connectionState == "disconnected" or
+                            pc.iceConnectionState == "disconnected"
+                        ):
+                            self.schedule_task(self._recover_peer_transport(remote_peer_id, pc))
+                    self._peer_disconnect_grace_handles[remote_peer_id] = (
+                        self.loop.call_later(15.0, recover_if_still_disconnected)
+                    )
+            else:
+                timer = self._peer_disconnect_grace_handles.pop(remote_peer_id, None)
+                if timer is not None:
+                    timer.cancel()
+
+        @pc.on("connectionstatechange")
+        def on_connectionstatechange():
+            on_transport_state_change()
+
+        @pc.on("iceconnectionstatechange")
+        def on_iceconnectionstatechange():
+            on_transport_state_change()
 
         @pc.on("datachannel")
         def on_datachannel(channel):
