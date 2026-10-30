@@ -276,3 +276,31 @@ test('screenshot observer can restart after a stopped foreground service', () =>
   assert.match(native, /if \(executor\.isShutdown\) executor = Executors\.newSingleThreadExecutor\(\)/);
   assert.match(native, /executor\.shutdownNow\(\)/);
 });
+
+test('photo permission regression on Android 14+: selected-only access cannot enable screenshot auto-sync', () => {
+  const app = fs.readFileSync(path.join(root, 'ClipCascade_Mobile/src/App.js'), 'utf8');
+  const manifest = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/AndroidManifest.xml'), 'utf8');
+  const native = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardListenerModule.kt'), 'utf8');
+  const watcher = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ScreenshotMediaMonitor.kt'), 'utf8');
+  assert.match(manifest, /android\.permission\.READ_MEDIA_VISUAL_USER_SELECTED/);
+  assert.match(app, /Platform\.Version >= 34/);
+  assert.match(app, /PermissionsAndroid\.requestMultiple/);
+  assert.match(app, /READ_MEDIA_VISUAL_USER_SELECTED/);
+  assert.match(app, /if \(result !== PermissionsAndroid\.RESULTS\.GRANTED\)/);
+  assert.match(native, /Manifest\.permission\.READ_MEDIA_IMAGES/);
+  assert.match(watcher, /ContextCompat\.checkSelfPermission\(context, readPermission\)/);
+  assert.match(watcher, /stop\(\)/);
+});
+
+test('screenshot observer defers unfinished image rows and advances cursor past processed media', () => {
+  const watcher = fs.readFileSync(path.join(root,
+    'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ScreenshotMediaMonitor.kt'), 'utf8');
+  assert.match(watcher, /maxIncompleteRetries = 6/);
+  assert.match(watcher, /needsRetry = true/);
+  assert.match(watcher, /earliestIncompleteId/);
+  assert.match(watcher, /lastCompletedId/);
+  assert.match(watcher, /handler\.postDelayed\(scheduleScan, 1600L\)/);
+});
