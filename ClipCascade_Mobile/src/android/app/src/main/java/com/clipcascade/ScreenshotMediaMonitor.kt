@@ -48,14 +48,21 @@ internal class ScreenshotMediaMonitor(
 
     private val scheduleScan = Runnable {
         if (!active) return@Runnable
-        executor.execute {
-            if (active) scanNewImages()
+        try {
+            executor.execute {
+                if (active) scanNewImages()
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Stop may race with an already scheduled ContentObserver callback.
         }
     }
 
     /** Start watching only AFTER capturing a high-water mark of existing images. */
-    fun start() {
-        if (active) return
+    fun start(onReady: (Boolean) -> Unit) {
+        if (active) {
+            onReady(true)
+            return
+        }
         active = true
         executor.execute {
             try {
@@ -79,8 +86,14 @@ internal class ScreenshotMediaMonitor(
                     return@execute
                 }
                 handler.postDelayed(scheduleScan, 1100L)
+                onReady(true)
             } catch (_: Exception) {
                 active = false
+                observer?.let {
+                    try { resolver.unregisterContentObserver(it) } catch (_: Exception) {}
+                }
+                observer = null
+                onReady(false)
             }
         }
     }
@@ -143,6 +156,13 @@ internal class ScreenshotMediaMonitor(
                     if (!active) break
                     // Mark first: observers often fire repeatedly for one screenshot.
                     delivered.add(id)
+                    // Bound de-dup metadata for months-long foreground sessions.
+                    if (delivered.size > 2048) {
+                        val sortedIds = delivered.sorted()
+                        val floor = sortedIds[sortedIds.size - 1024]
+                        delivered.removeAll { it < floor }
+                        baselineId = maxOf(baselineId, floor - 1)
+                    }
                     deliver(uri)
                 }
             }
