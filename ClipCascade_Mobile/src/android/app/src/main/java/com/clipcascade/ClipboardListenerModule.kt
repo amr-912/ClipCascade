@@ -33,6 +33,57 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
     private var clipboardManager: ClipboardManager =
         reactContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private var listener: ClipboardManager.OnPrimaryClipChangedListener? = null
+    private var screenshotMediaMonitor: ScreenshotMediaMonitor? = null
+    private val savedScreenshotEvents = AtomicInteger(0)
+
+    @ReactMethod
+    fun startScreenshotMonitoring(promise: Promise) {
+        val permission = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(reactApplicationContext, permission) !=
+            PackageManager.PERMISSION_GRANTED) {
+            promise.reject("SCREENSHOT_PERMISSION", "Full photo read access is required for automatic screenshot sync.")
+            return
+        }
+        if (!isListening) {
+            promise.reject("MONITOR_INACTIVE", "Start ClipCascade before enabling screenshot monitoring.")
+            return
+        }
+        if (screenshotMediaMonitor?.isActive == true) {
+            promise.resolve(true)
+            return
+        }
+        try {
+            val monitor = ScreenshotMediaMonitor(reactApplicationContext) { uri ->
+                if (isListening) {
+                    recordClipboardEvent(
+                        "screenshot", "image",
+                        android.content.ClipDescription("Saved Screenshot", arrayOf("image/png"))
+                    )
+                    savedScreenshotEvents.incrementAndGet()
+                    val params = Arguments.createMap()
+                    params.putString("content", uri.toString())
+                    params.putString("type", "image")
+                    sendEventToJS(params)
+                }
+            }
+            screenshotMediaMonitor = monitor
+            monitor.start()
+            promise.resolve(true)
+        } catch (_: Exception) {
+            screenshotMediaMonitor?.stop()
+            screenshotMediaMonitor = null
+            promise.reject("SCREENSHOT_MONITOR_ERROR", "Could not start screenshot observer.")
+        }
+    }
+
+    @ReactMethod
+    fun stopScreenshotMonitoring(promise: Promise) {
+        screenshotMediaMonitor?.stop()
+        screenshotMediaMonitor = null
+        promise.resolve(true)
+    }
+
     @Volatile private var isListening = false
     private var lastEmittedTime: Long = 0 // for clipboard listener debounce
     private var lastActivityStartTime: Long = 0 // for log cat monitoring  debounce
@@ -157,6 +208,8 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
 
     @ReactMethod
     fun stopListening() {
+        screenshotMediaMonitor?.stop()
+        screenshotMediaMonitor = null
         isListening = false
         logcatWatchdogHandler.removeCallbacks(logcatWatchdog)
         // 1) Remove clipboard listener
@@ -232,6 +285,8 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
         Thread {
             val report = Arguments.createMap()
             report.putBoolean("monitorActive", isListening)
+            report.putBoolean("screenshotMonitorActive", screenshotMediaMonitor?.isActive == true)
+            report.putInt("savedScreenshotEvents", savedScreenshotEvents.get())
             report.putInt("observedEvents", observedEvents.get())
             report.putInt("transportEvents", transportEvents.get())
             report.putString("lastTransportStage", lastTransportStage)
