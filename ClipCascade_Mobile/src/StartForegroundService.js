@@ -349,6 +349,20 @@ module.exports = async (inputData = null) => {
           },
         );
 
+        // Screenshot observer is strictly opt-in, starts after clipboard event
+        // subscription, and shares the existing encrypted image transport.
+        // Old gallery content is never emitted; native observer takes a baseline.
+        if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {
+          try {
+            await ClipboardListener.startScreenshotMonitoring();
+          } catch (_) {
+            await setDataInAsyncStorage(
+              'wsStatusMessage',
+              '⚠️ Screenshot auto-sync requires full photo permission.',
+            );
+          }
+        }
+
         const clearFiles = async (expensiveCall = false) => {
           files_in_memory = null;
           if (!expensiveCall) {
@@ -792,6 +806,7 @@ module.exports = async (inputData = null) => {
                     pc.onicecandidate = null;
                     pc.ondatachannel = null;
                     pc.onconnectionstatechange = null;
+                    pc.oniceconnectionstatechange = null;
                     pc.close();
                   } catch (e) {
                     // no-op
@@ -1328,6 +1343,7 @@ module.exports = async (inputData = null) => {
                 pc.onicecandidate = null;
                 pc.ondatachannel = null;
                 pc.onconnectionstatechange = null;
+                    pc.oniceconnectionstatechange = null;
                 pc.close();
               } catch (e) {
                 // no-op
@@ -1366,29 +1382,36 @@ module.exports = async (inputData = null) => {
               await setupDataChannel(remotePeerId, channel);
             };
 
-            pc.onconnectionstatechange = () => {
+            const checkPeerConnectivity = () => {
               const st = pc.connectionState;
-              if (st === 'disconnected' && !peerDisconnectGraceTimers[remotePeerId]) {
+              const ice = pc.iceConnectionState;
+              // Some Android VPN/network transitions first surface in ICE
+              // state, before RTCPeerConnection.connectionState updates.
+              if ((st === 'disconnected' || ice === 'disconnected') &&
+                  !peerDisconnectGraceTimers[remotePeerId]) {
                 // A VPN/network switch may keep ICE 'disconnected' without
                 // closing WebSocket. Allow transient routing changes to heal.
                 peerDisconnectGraceTimers[remotePeerId] = setTimeout(() => {
                   delete peerDisconnectGraceTimers[remotePeerId];
                   if (!p2pShuttingDown &&
                       peerConnections[remotePeerId] === pc &&
-                      pc.connectionState === 'disconnected') {
+                      (pc.connectionState === 'disconnected' ||
+                       pc.iceConnectionState === 'disconnected')) {
                     recoverPeerTransport(remotePeerId, pc);
                   }
                 }, 15000);
-              } else if (st !== 'disconnected') {
+              } else if (st !== 'disconnected' && ice !== 'disconnected') {
                 if (peerDisconnectGraceTimers[remotePeerId]) {
                   clearTimeout(peerDisconnectGraceTimers[remotePeerId]);
                   delete peerDisconnectGraceTimers[remotePeerId];
                 }
-                if (st === 'failed' || st === 'closed') {
-                  recoverPeerTransport(remotePeerId, pc);
-                }
+              }
+              if (st === 'failed' || st === 'closed' || ice === 'failed') {
+                recoverPeerTransport(remotePeerId, pc);
               }
             };
+            pc.onconnectionstatechange = checkPeerConnectivity;
+            pc.oniceconnectionstatechange = checkPeerConnectivity;
 
             return pc;
           };
