@@ -114,3 +114,14 @@ test('invalid authentication mode must fail closed without using provider', asyn
   });
   assert.equal(res.status, 503);
 });
+
+
+test('query string preserves exact issuer pathname and rejects other route-prefix paths', async () => {
+  const noCall = () => { throw Error('No provider call before authentication'); };
+  const query = new Request('https://sync.example/ice-servers?check=12345');
+  const response = await issueIceServers(query, env, noCall);
+  assert.equal(response.status, 401);
+  const forbidden = new Request('https://sync.example/ice-servers-unrelated');
+  const notFound = await issueIceServers(forbidden, env, noCall);
+  assert.equal(notFound.status, 404);
+});
