@@ -120,9 +120,9 @@ def probe(username, password, opener):
         print("RESULT=CSRF_NOT_FOUND")
         return False
     post_data = login_form(username, password, parser.value)
-    status, _ = fetch(opener, "/login", post_data)
+    status, login_body = fetch(opener, "/login", post_data)
     print("LOGIN_HTTP=" + str(status))
-    if status != 200:
+    if status != 200 or "bad credentials" in login_body.lower():
         print("RESULT=NEW_LOGIN_REJECTED")
         return False
 
