@@ -11,6 +11,10 @@ routes = [
 
 [vars]
 CLIPCASCADE_AUTH_ORIGIN = "https://sync.world-honey.com/"
+# The original Spring server uses /whoami; the existing custom relay has
+# /validate-session. Do not enable the latter without verifying its response
+# for both authorized and unauthorized JSESSIONID cookies.
+# CLIPCASCADE_AUTH_MODE = "validate-session"
 
 # Never put TURN_KEY_ID or TURN_KEY_API_TOKEN here!
 # Use: wrangler secret put TURN_KEY_ID
