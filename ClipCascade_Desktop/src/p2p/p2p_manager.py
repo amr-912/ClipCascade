@@ -481,6 +481,8 @@ class P2PManager(ReconnectMixin, WSInterface):
         # Find which peers are no longer present
         stale_ids = set(self.peer_connections.keys()) - updated_peers
         for old_pid in stale_ids:
+            self._clear_peer_ack(old_pid)
+            self._ack_capable_peers.discard(old_pid)
             timer = self._peer_disconnect_grace_handles.pop(old_pid, None)
             if timer is not None:
                 timer.cancel()
