@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {issueIceServers} from '../cloudflare/turn-issuer/worker.mjs';
 
 const env = {TURN_KEY_ID: 'test-key', TURN_KEY_API_TOKEN: 'server-secret',
@@ -124,4 +125,9 @@ test('query string preserves exact issuer pathname and rejects other route-prefi
   const forbidden = new Request('https://sync.example/ice-servers-unrelated');
   const notFound = await issueIceServers(forbidden, env, noCall);
   assert.equal(notFound.status, 404);
+});
+
+test('Cloudflare Worker route matches URI query strings; handler remains exact-path only', () => {
+  const config = fs.readFileSync(new URL('../cloudflare/turn-issuer/wrangler.toml', import.meta.url), 'utf8');
+  assert.match(config, /pattern\s*=\s*"sync\.world-honey\.com\/ice-servers\*"/);
 });
