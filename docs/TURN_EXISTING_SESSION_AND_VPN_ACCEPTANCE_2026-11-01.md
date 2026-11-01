@@ -72,3 +72,50 @@ Android selected-pair classification, Kotlin, Windows client tests, and
 packaged preview binaries. They cannot inspect the live Cloudflare account,
 validate a real cookie, or demonstrate actual VPN relay or Samsung clipboard
 behavior. Do not claim those gates as passed without physical tests.
+
+
+## 2026-11-01: field diagnosis after safe existing-session probe
+
+Real Windows probe output:
+- DATA_PRESENT=True, SESSION_PRESENT=True, SERVER_HOST_VERIFIED=True.
+- AUTH_HTTP=401, SESSION_AUTHORIZED=False.
+- RESULT=EXISTING_SESSION_NOT_RECOGNIZED.
+
+**Interpretation:** the stored JSESSIONID is rejected by the live old relay's
+HTTP session validator, yet the operator confirms the desktop↔Android P2P
+clipboard is *actively transferring data*. The two observations can coexist:
+an established WebSocket/data channel may remain open after session
+expiration, but this possibility does not establish the specific cause.
+Do not conclude the user is logged out of the working P2P session, that
+passwords changed, or that the server enforces one-session-only logins.
+
+**Previously issued manual login diagnostic had an incorrect wire contract**:
+it posted the entered plaintext password, whereas BOTH official clients
+pre-hash the entered password with lowercase hexadecimal SHA3-512 before
+the HTTP POST to /login. Windows source: CipherManager.string_to_sha3_512_lowercase_hex
+called by Application.authenticate_and_connect. Android source:
+stringToSHA3_512LowercaseHex in App.js handleLogin. Therefore the former
+401 Bad credentials on the manual PowerShell login attempt cannot be treated
+as evidence that the operator entered the wrong password.
+
+A separate *opt-in* correct-contract test exists at
+`tools/Probe-ClipCascadeLogin.py`. It uses the Python stdlib, SHA3-512,
+CSRF, cookiejar, strict validator response and timeouts. It does not edit
+the installed DATA or reveal credentials. **By default it does not sign in**:
+`RESULT=LOGIN_NOT_ATTEMPTED`. A user would have to add
+`--activate-login` explicitly to create a separate server session.
+Because the existing relay's single-session policy is unknown and the
+operator's existing connection is valuable, do **not** recommend running
+this opt-in step until the possibility of invalidating the active
+connection has been evaluated or a safe interruption is acceptable.
+
+Cloudflare documentation says fetch from a route Worker to a Worker
+on a Custom Domain on the same zone can succeed without a service
+binding. This supports the proposed issuer->legacy validator architecture,
+but is **not proof that live authentication succeeds**.
+https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
+
+**Next gate:** verify an authenticated cookie after explicit consent to a
+new session or by a client-owned safe refresh path. Only then can
+`/ice-servers` mint temporary TURN credentials. Keep the existing
+production relay and official client installations unchanged.
