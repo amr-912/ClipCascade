@@ -150,6 +150,7 @@ class P2PManager(ReconnectMixin, WSInterface):
         with self._live_connections_lock:
             n = self.live_connections
         stats += f" Peers: {n}"
+        stats += " | ICE: TURN available" if self._ice_turn_ready else " | ICE: direct/STUN only"
         if self.sending_fragment_stats is not None:
             stats += f" | Sending: {self.sending_fragment_stats}"
         if self.receiving_fragment_stats is not None:
