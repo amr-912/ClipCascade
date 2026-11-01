@@ -24,6 +24,10 @@ on:
       - '.github/workflows/bidirectional_clipboard_tests.yml'
   workflow_dispatch:
 
+concurrency:
+  group: bidirectional-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
