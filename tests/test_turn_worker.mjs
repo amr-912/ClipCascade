@@ -70,3 +70,47 @@ test('Cloudflare TURN Worker rejects unsafe auth origin configuration', async ()
     CLIPCASCADE_AUTH_ORIGIN: 'http://sync.example/'}, () => {throw Error('never');});
   assert.equal(res.status, 503);
 });
+
+
+test('legacy Cloudflare relay validates an affirmative session result before TURN', async () => {
+  const calls = [];
+  const res = await issueIceServers(request(), {
+    ...env, CLIPCASCADE_AUTH_MODE: 'validate-session',
+  }, async (url, opts) => {
+    calls.push(url);
+    if (url.endsWith('/validate-session'))
+      return {status: 200, text: async () => JSON.stringify({valid: true})};
+    return {status: 201, json: async () => ({iceServers: [{
+      urls: ['turns:turn.cloudflare.com:443?transport=tcp'],
+      username: 'temporary-user', credential: 'temporary-secret',
+    }]})};
+  });
+  assert.equal(res.status, 200);
+  assert.equal(calls[0], 'https://sync.example/validate-session');
+  assert.equal(calls.length, 2);
+});
+
+test('a 200 login HTML, a false session, and arbitrary 200 text never mint TURN', async () => {
+  for (const fakeSession of ['<html>Login</html>', '{"valid":false}', 'authenticated',
+                             '{"status":"valid"}', '{"authenticated":true}']) {
+    let cloudCalls = 0;
+    const res = await issueIceServers(request(), {
+      ...env, CLIPCASCADE_AUTH_MODE: 'validate-session',
+    }, async (url) => {
+      if (url.endsWith('/validate-session'))
+        return {status: 200, text: async () => fakeSession};
+      cloudCalls++;
+      throw Error('should not mint credentials');
+    });
+    assert.equal(res.status, 401, fakeSession);
+    assert.equal(cloudCalls, 0, fakeSession);
+  }
+});
+
+test('invalid authentication mode must fail closed without using provider', async () => {
+  const res = await issueIceServers(request(), {...env,
+    CLIPCASCADE_AUTH_MODE: 'trust-200'}, () => {
+    throw Error('network must not be reached');
+  });
+  assert.equal(res.status, 503);
+});
