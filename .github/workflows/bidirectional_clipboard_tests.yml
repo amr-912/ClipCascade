@@ -18,6 +18,9 @@ on:
       - 'ClipCascade_Server/ClipCascade_Backend/src/main/java/**'
       - 'tests/test_ice_server_config.py'
       - 'tests/test_ice_server_config.cjs'
+      - 'tests/test_turn_worker.mjs'
+      - 'cloudflare/turn-issuer/**'
+      - 'ClipCascade_Server/ClipCascade_Backend/src/test/java/**'
       - 'tests/test_android_clipboard_transport.cjs'
       - 'docs/ANDROID_SCREENSHOT_FIELD_TEST.md'
       - 'tests/test_clipboard_p2p_backpressure.py'
@@ -43,7 +46,7 @@ jobs:
       - name: Parse full service script
         run: node --check ClipCascade_Mobile/src/StartForegroundService.js && node --check ClipCascade_Mobile/src/IceServerConfig.js
       - name: Run transfer and native-bridge regression tests
-        run: node --test tests/test_android_clipboard_transport.cjs tests/test_ice_server_config.cjs
+        run: node --test tests/test_android_clipboard_transport.cjs tests/test_ice_server_config.cjs tests/test_turn_worker.mjs
 
   windows-p2p:
     name: Windows P2P regressions (${{ matrix.os }})
@@ -73,7 +76,7 @@ jobs:
         working-directory: ClipCascade_Server/ClipCascade_Backend
         run: |
           chmod +x mvnw
-          ./mvnw -B -DskipTests compile
+          ./mvnw -B -Dtest=IceServersControllerTest test
 
   android-native:
     name: Compile real Android Kotlin modules
