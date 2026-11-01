@@ -100,6 +100,9 @@ internal class ScreenshotMediaMonitor(
                 onReady(true)
             } catch (_: Exception) {
                 active = false
+                // Failed baseline/registration must never leave a live executor
+                // or fall back to scanning screenshots from the beginning.
+                executor.shutdownNow()
                 observer?.let {
                     try { resolver.unregisterContentObserver(it) } catch (_: Exception) {}
                 }
@@ -127,7 +130,7 @@ internal class ScreenshotMediaMonitor(
         "${MediaStore.Images.Media._ID} DESC",
     )?.use { cursor ->
         if (cursor.moveToFirst()) cursor.getLong(0) else 0L
-    } ?: 0L
+    } ?: throw IllegalStateException("MediaStore unavailable: refuse to scan history")
 
     private fun scanNewImages() {
         if (!active || scanInFlight) return
