@@ -647,7 +647,23 @@ module.exports = async (inputData = null) => {
           const peerOpChains = {};
           const dataChannelHeartbeatTimers = {};
           const peerDisconnectGraceTimers = {};
-          const P2P_DC_KEEPALIVE_JSON = JSON.stringify({ _cc_keepalive: true });
+          // Old clients already ignore _cc_keepalive frames; capability
+          // negotiation never injects synthetic clipboard data.
+          const P2P_DC_KEEPALIVE_JSON = JSON.stringify({
+            _cc_keepalive: true, ackProtocol: 1,
+          });
+          const ackCapablePeers = new Set();
+          const pendingAcknowledgements = {};
+          const ACK_TIMEOUT_MS = 20000;
+          const MAX_ACK_RETRIES = 2;
+          const clearPeerAck = peerId => {
+            const pending = pendingAcknowledgements[peerId];
+            if (pending?.timer) clearTimeout(pending.timer);
+            delete pendingAcknowledgements[peerId];
+          };
+          const clearAllAcks = () => {
+            Object.keys(pendingAcknowledgements).forEach(clearPeerAck);
+          };
           // Only the latest copy is retained in RAM when signaling is up but
           // the actual data channel is not ready. Never persist clipboard data.
           const PENDING_CLIPBOARD_TTL_MS = 90000;
@@ -768,6 +784,8 @@ module.exports = async (inputData = null) => {
 
           async function cleanupPeerConnections() {
             p2pShuttingDown = true;
+            clearAllAcks();
+            ackCapablePeers.clear();
             try {
               for (const id of Object.keys(dataChannelHeartbeatTimers)) {
                 clearInterval(dataChannelHeartbeatTimers[id]);
@@ -1118,10 +1136,21 @@ module.exports = async (inputData = null) => {
           };
 
           // receive clipboard content P2P
-          const onDataChannelMessage = async messageJson => {
+          const onDataChannelMessage = async (messageJson, remotePeerId = null, channel = null) => {
             try {
               const message = JSON.parse(messageJson);
               if (message && message._cc_keepalive === true) {
+                if (message.ackProtocol === 1 && remotePeerId) {
+                  ackCapablePeers.add(remotePeerId);
+                }
+                return;
+              }
+              if (message && typeof message._cc_ack === 'string') {
+                const pending = pendingAcknowledgements[remotePeerId];
+                if (pending && pending.id === message._cc_ack) {
+                  clearPeerAck(remotePeerId);
+                  noteClipboardStage('p2p-' + pending.type + '-acknowledged');
+                }
                 return;
               }
 
@@ -1203,29 +1232,33 @@ module.exports = async (inputData = null) => {
 
               // hash clipboard content
               const hcb = await hashCB(cb);
+              let accepted = false;
               if (await newCB(hcb)) {
-                previous_clipboard_content_hash = hcb;
-
-                await resetReceivingFragments();
-                // validate clipboard size
+                // A rejected/failed clipboard write must not be acknowledged.
                 if (await validateClipboardSize(cb, type_, 'Inbound')) {
-                  // set clipboard content
                   if (type_ === 'text') {
-                    Clipboard.setString(cb);
+                    await Clipboard.setString(cb);
                   } else if (type_ === 'image') {
-                    await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(
-                      cb,
-                    );
+                    await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(cb);
                   } else if (type_ === 'files') {
                     await showFilesDownloadNotification('📥 Download File(s)');
-
                     files_in_memory = cb;
-                    await setDataInAsyncStorage(
-                      'filesAvailableToDownload',
-                      'true',
-                    );
+                    await setDataInAsyncStorage('filesAvailableToDownload', 'true');
+                  } else {
+                    return;
                   }
+                  previous_clipboard_content_hash = hcb;
+                  accepted = true;
                 }
+              } else {
+                // Repeated frame after a lost ACK. Clipboard already contains
+                // this content; acknowledge without applying it twice.
+                accepted = true;
+              }
+              if (accepted && metadata?.id && remotePeerId &&
+                  ackCapablePeers.has(remotePeerId) &&
+                  channel?.readyState === 'open') {
+                channel.send(JSON.stringify({_cc_ack: metadata.id}));
               }
             } catch (e) {
               p2pMsg = '❌ P2P Inbound Error: ' + e;
@@ -1281,6 +1314,8 @@ module.exports = async (inputData = null) => {
             // 2) For each stale peer, close data channel and peer connection
             for (const oldPid of stalePeerIds) {
               delete peerOpChains[oldPid];
+              clearPeerAck(oldPid);
+              ackCapablePeers.delete(oldPid);
               if (peerDisconnectGraceTimers[oldPid]) {
                 clearTimeout(peerDisconnectGraceTimers[oldPid]);
                 delete peerDisconnectGraceTimers[oldPid];
@@ -1314,6 +1349,8 @@ module.exports = async (inputData = null) => {
           };
 
           const disposePeerConnection = async peerId => {
+            clearPeerAck(peerId);
+            ackCapablePeers.delete(peerId);
             if (peerDisconnectGraceTimers[peerId]) {
               clearTimeout(peerDisconnectGraceTimers[peerId]);
               delete peerDisconnectGraceTimers[peerId];
@@ -1549,12 +1586,14 @@ module.exports = async (inputData = null) => {
           const setupDataChannel = async (remotePeerId, channel) => {
             channel.onopen = async () => {
               startDataChannelHeartbeat(remotePeerId, channel);
+              // Immediate capability advertisement, backwards compatible.
+              channel.send(P2P_DC_KEEPALIVE_JSON);
               await syncLiveConnectionsCount();
               await flushPendingClipboard();
             };
 
             channel.onmessage = async e => {
-              await onDataChannelMessage(e.data);
+              await onDataChannelMessage(e.data, remotePeerId, channel);
             };
 
             channel.onclose = async () => {
