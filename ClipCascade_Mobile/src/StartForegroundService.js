@@ -975,9 +975,9 @@ module.exports = async (inputData = null) => {
             const originalContent = clipContent;
             try {
               if (!replay) {
-                // The most recent user copy supersedes a stale pending copy.
+                // A duplicate observer event MUST NOT cancel an outstanding ACK
+                // for the same copy. Supersede only after content-hash validation.
                 pendingOutboundClipboard = null;
-                clearAllAcks();
               }
               await clearFiles();
               if (
@@ -1018,6 +1018,7 @@ module.exports = async (inputData = null) => {
 
               const hcb = await hashCB(clipContent);
               if (!replay && !(await newCB(hcb))) return;
+              if (!replay) clearAllAcks();
 
               const rawPayloadSizeInBytes = textEncoder.encode(clipContent).length;
               if (cipher_enabled === 'true') {
