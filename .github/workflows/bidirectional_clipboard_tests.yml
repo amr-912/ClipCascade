@@ -12,6 +12,12 @@ on:
       - 'ClipCascade_Mobile/src/android/app/src/test/**'
       - 'ClipCascade_Mobile/src/android/app/build.gradle'
       - 'ClipCascade_Desktop/src/p2p/p2p_manager.py'
+      - 'ClipCascade_Desktop/src/p2p/ice_server_config.py'
+      - 'ClipCascade_Mobile/src/IceServerConfig.js'
+      - 'ClipCascade_Mobile/src/UpdateChecker.js'
+      - 'ClipCascade_Server/ClipCascade_Backend/src/main/java/**'
+      - 'tests/test_ice_server_config.py'
+      - 'tests/test_ice_server_config.cjs'
       - 'tests/test_android_clipboard_transport.cjs'
       - 'docs/ANDROID_SCREENSHOT_FIELD_TEST.md'
       - 'tests/test_clipboard_p2p_backpressure.py'
@@ -31,9 +37,9 @@ jobs:
         with:
           node-version: '22'
       - name: Parse full service script
-        run: node --check ClipCascade_Mobile/src/StartForegroundService.js
+        run: node --check ClipCascade_Mobile/src/StartForegroundService.js && node --check ClipCascade_Mobile/src/IceServerConfig.js
       - name: Run transfer and native-bridge regression tests
-        run: node --test tests/test_android_clipboard_transport.cjs
+        run: node --test tests/test_android_clipboard_transport.cjs tests/test_ice_server_config.cjs
 
   windows-p2p:
     name: Windows P2P regressions (${{ matrix.os }})
@@ -47,12 +53,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install pytest pillow
-      - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py
+      - run: python -m pip install pytest pillow requests
+      - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py tests/test_ice_server_config.py
+
+  backend-turn:
+    name: Compile authenticated TURN credential issuer (Spring Boot JDK 21)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile Spring Boot TURN endpoint without live credentials
+        working-directory: ClipCascade_Server/ClipCascade_Backend
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -DskipTests compile
 
   android-native:
     name: Compile real Android Kotlin modules
-    needs: android-behavior
+    needs: [android-behavior, windows-p2p, backend-turn]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
