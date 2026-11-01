@@ -18,6 +18,7 @@ import {
 } from 'react-native-webrtc';
 import Clipboard from '@react-native-clipboard/clipboard';
 const {loadIceServerConfig} = require('./IceServerConfig');
+const {classifySelectedIcePath} = require('./IcePathDiagnostics');
 import {checkForUpdates} from './UpdateChecker';
 
 import {
@@ -647,6 +648,7 @@ module.exports = async (inputData = null) => {
           const peerOpChains = {};
           const dataChannelHeartbeatTimers = {};
           const peerDisconnectGraceTimers = {};
+          const peerIcePathTimers = {};
           // Old clients already ignore _cc_keepalive frames; capability
           // negotiation never injects synthetic clipboard data.
           const P2P_DC_KEEPALIVE_JSON = JSON.stringify({
@@ -705,6 +707,13 @@ module.exports = async (inputData = null) => {
             const iceMode = await getDataFromAsyncStorage('p2pIceMode');
             msg += iceMode === 'turn-configured'
               ? ' | ICE: TURN available' : ' | ICE: direct/STUN only';
+            // Selected path is verified from RTCStats, not from TURN config.
+            const selectedPath = await getDataFromAsyncStorage('p2pIceSelectedRoute');
+            msg += selectedPath === 'relay-selected'
+              ? ' | Path: TURN relay selected'
+              : selectedPath === 'direct-selected'
+                ? ' | Path: direct selected'
+                : ' | Path: unverified';
             if (sendingFragmentStats != null) {
               msg += ` | Sending: ${sendingFragmentStats}`;
             }
@@ -1387,6 +1396,10 @@ module.exports = async (inputData = null) => {
               clearTimeout(peerDisconnectGraceTimers[peerId]);
               delete peerDisconnectGraceTimers[peerId];
             }
+            if (peerIcePathTimers[peerId]) {
+              clearTimeout(peerIcePathTimers[peerId]);
+              delete peerIcePathTimers[peerId];
+            }
             if (dataChannelHeartbeatTimers[peerId]) {
               clearInterval(dataChannelHeartbeatTimers[peerId]);
               delete dataChannelHeartbeatTimers[peerId];
@@ -1431,6 +1444,7 @@ module.exports = async (inputData = null) => {
             const ice = await loadIceServerConfig(endpoint, stun_url);
             await setDataInAsyncStorage('p2pIceMode',
               ice.hasTurn ? 'turn-configured' : 'direct-only');
+            await setDataInAsyncStorage('p2pIceSelectedRoute', 'unverified');
             const pc = new RTCPeerConnection({iceServers: ice.servers});
 
             pc.onicecandidate = async event => {
@@ -1455,6 +1469,29 @@ module.exports = async (inputData = null) => {
               const ice = pc.iceConnectionState;
               // Some Android VPN/network transitions first surface in ICE
               // state, before RTCPeerConnection.connectionState updates.
+              // Query selected ICE pair after connection. Never serialize the
+              // raw stats (which may contain IPs) or credentials to storage.
+              if ((st === 'connected' || ice === 'connected' ||
+                   ice === 'completed') && !peerIcePathTimers[remotePeerId]) {
+                peerIcePathTimers[remotePeerId] = setTimeout(async () => {
+                  delete peerIcePathTimers[remotePeerId];
+                  if (p2pShuttingDown || peerConnections[remotePeerId] !== pc)
+                    return;
+                  let path = 'unverified';
+                  try {
+                    path = classifySelectedIcePath(await pc.getStats());
+                  } catch (_) { /* instrumentation must never harm transport */ }
+                  if (!p2pShuttingDown && peerConnections[remotePeerId] === pc)
+                    await setDataInAsyncStorage('p2pIceSelectedRoute', path);
+                }, 1200);
+              } else if ((st === 'disconnected' || ice === 'disconnected' ||
+                          st === 'failed' || ice === 'failed') &&
+                         peerIcePathTimers[remotePeerId]) {
+                clearTimeout(peerIcePathTimers[remotePeerId]);
+                delete peerIcePathTimers[remotePeerId];
+                setDataInAsyncStorage('p2pIceSelectedRoute', 'unverified')
+                  .catch(() => {});
+              }
               if ((st === 'disconnected' || ice === 'disconnected') &&
                   !peerDisconnectGraceTimers[remotePeerId]) {
                 // A VPN/network switch may keep ICE 'disconnected' without
