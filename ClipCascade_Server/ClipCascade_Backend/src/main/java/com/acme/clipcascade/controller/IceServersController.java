@@ -14,6 +14,7 @@ import org.springframework.web.client.RestClientException;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Authenticated TURN credential issuer. All routes other than explicit public
@@ -25,7 +26,8 @@ import java.util.Map;
 public class IceServersController {
     private static final int TTL_SECONDS = 3600;
     private static final int MAX_CACHE_AGE_SECONDS = 2700;
-    private static final String SESSION_CACHE = "clipcascade.ephemeral.ice";
+    // Credentials remain process-local, never in JDBC Spring Session storage.
+    private final ConcurrentHashMap<String, CachedIce> sessionCache = new ConcurrentHashMap<>();
     private final String keyId;
     private final String apiToken;
     private final RestClient rest;
@@ -49,8 +51,8 @@ public class IceServersController {
         }
         synchronized (session) {
             long now = Instant.now().getEpochSecond();
-            Object cached = session.getAttribute(SESSION_CACHE);
-            if (cached instanceof CachedIce c && now < c.cachedAt() + MAX_CACHE_AGE_SECONDS) {
+            CachedIce c = sessionCache.get(session.getId());
+            if (c != null && now < c.cachedAt() + MAX_CACHE_AGE_SECONDS) {
                 return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(c.payload());
             }
             try {
@@ -70,7 +72,11 @@ public class IceServersController {
                         "iceServers", response.get("iceServers"),
                         "expiresAt", (now + TTL_SECONDS) * 1000L,
                         "provider", "managed-turn");
-                session.setAttribute(SESSION_CACHE, new CachedIce(now, payload));
+                if (sessionCache.size() >= 2048) {
+                    // Hard bound: an API issuer must not accumulate arbitrary sessions.
+                    sessionCache.clear();
+                }
+                sessionCache.put(session.getId(), new CachedIce(now, payload));
                 return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(payload);
             } catch (RestClientException | IllegalStateException e) {
                 // No credentials, session cookies, or provider error bodies in logs.
@@ -80,6 +86,5 @@ public class IceServersController {
         }
     }
 
-    private record CachedIce(long cachedAt, Map<String, Object> payload)
-            implements java.io.Serializable {}
+    private record CachedIce(long cachedAt, Map<String, Object> payload) {}
 }
