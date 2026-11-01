@@ -58,3 +58,13 @@ Operator has reported completing creation and deployment of `clipcascade-turn-is
 ### Security note
 
 Earlier screenshot exposed a fragment of the long-term TURN Bearer token in a curl example. Rotate before treating it as production-grade, and put the new token only in the Worker Production secret. Worker tests ensure unauthorized requests do not mint credentials, but published rate limiting and actual session verification are still operational acceptance criteria.
+
+## Routing correction verified against official Cloudflare matching rules
+
+On 2026-11-01 the production route was shown as `sync.world-honey.com/ice-servers` (no terminal `*`) in the Cloudflare dashboard. The operator then ran a `curl` diagnostic including `?check=<nonce>`, which returned HTTP 200 `Raqim Clipboard Relay`. This is **expected to bypass the no-star route**: Cloudflare includes query strings when matching Worker route patterns and requires a final `*` for query-string requests. Source: https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior
+
+**Correct dashboard Route:** `sync.world-honey.com/ice-servers*` on worker `clipcascade-turn-issuer`, zone `world-honey.com`. This prefix pattern also routes unrelated suffix paths to the Worker, so `worker.mjs` independently rejects any pathname other than `/ice-servers` with 404. A tested query `/ice-servers?check=12345` should receive unauthorized HTTP 401 without a session. **Never** use zone-wide wildcards such as `*.world-honey.com/*`.
+
+This explains the query-bearing PowerShell result. However, the operator also reported `Raqim Clipboard Relay` when visiting the bare path with no query; that separate observation is **not conclusively explained** by the nonce mismatch and must be retested after updating the route. If bare path still returns old Worker output, check worker invocation logs, deployment status, other more-specific routes, and route ordering before changing production.
+
+Do not confuse receiving a 401 for unauthenticated requests with a successful TURN session: a valid logged-in Client must receive time-limited `iceServers` from Cloudflare, and the VPN tests must verify relay usage.
