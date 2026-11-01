@@ -10,6 +10,7 @@ import logging
 import pathlib
 import time
 import types
+import typing
 import uuid
 
 SOURCE = pathlib.Path(__file__).resolve().parents[1] / "ClipCascade_Desktop/src/p2p/p2p_manager.py"
@@ -18,13 +19,14 @@ SOURCE = pathlib.Path(__file__).resolve().parents[1] / "ClipCascade_Desktop/src/
 def get_sender():
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     original = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "P2PManager")
-    names = {"_send", "_send_chunk_with_backpressure", "_remember_pending_clipboard", "_flush_pending_clipboard"}
+    names = {"_send", "_send_chunk_with_backpressure", "_remember_pending_clipboard", "_flush_pending_clipboard", "_clear_peer_ack", "_clear_all_acks", "_watch_ack"}
     methods = [n for n in original.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
     assert {n.name for n in methods} == names
     methods.append(ast.parse("@staticmethod\ndef fragment_string(payload):\n    return [payload]").body[0])
+    methods.append(ast.parse("def __init__(self):\n    self._ack_capable_peers=set()\n    self._pending_acks={}\n    self._ack_timeout_sec=20\n    self._ack_max_retries=2").body[0])
     isolated = ast.Module(body=[ast.ClassDef(name="P2PManager", bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
     ast.fix_missing_locations(isolated)
-    env = {"json": json, "time": time, "asyncio": asyncio, "uuid": uuid, "logging": logging}
+    env = {"json": json, "time": time, "asyncio": asyncio, "uuid": uuid, "logging": logging, "Optional": typing.Optional}
     exec(compile(isolated, str(SOURCE), "exec"), env)
     return env["P2PManager"]
 
