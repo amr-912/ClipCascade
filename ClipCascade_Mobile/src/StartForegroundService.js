@@ -684,6 +684,11 @@ module.exports = async (inputData = null) => {
           getP2PStatusMessage = async () => {
             let msg = '📊';
             msg += ` Peers: ${liveConnectionsCount}`;
+            // Configuration status, not a claim that the selected ICE route
+            // actually traverses TURN or that the last copy was delivered.
+            const iceMode = await getDataFromAsyncStorage('p2pIceMode');
+            msg += iceMode === 'turn-configured'
+              ? ' | ICE: TURN available' : ' | ICE: direct/STUN only';
             if (sendingFragmentStats != null) {
               msg += ` | Sending: ${sendingFragmentStats}`;
             }
