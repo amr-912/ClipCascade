@@ -47,8 +47,14 @@ def normalize_ice_servers(payload, fallback_stun, now=None):
                        2 if "transport=udp" in c[0] else 3)
     if not candidates:
         raise ValueError("No authenticated TURN candidate")
-    selected = min(candidates, key=order)
-    servers.append({"urls": [selected[0]], "username": selected[1], "credential": selected[2]})
+    # aiortc accepts only the FIRST TURN server. Return every verified
+    # alternative in priority order so P2PManager can switch the selected
+    # provider URI at a failed ICE reconstruction (TLS443, then other TLS,
+    # UDP and TCP). Do not retry the same blocked route indefinitely.
+    candidates = sorted(set(candidates), key=order)
+    for uri, username, secret in candidates:
+        servers.append({"urls": [uri], "username": username,
+                        "credential": secret})
     expiry_ms = payload.get("expiresAt", 0)
     try:
         expiry = float(expiry_ms) / 1000
