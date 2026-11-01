@@ -90,6 +90,7 @@ class P2PManager(ReconnectMixin, WSInterface):
         self._ice_servers = []
         self._ice_expiry = 0.0
         self._ice_turn_ready = False
+        self._turn_route_index: Dict[str, int] = {}
 
         # Event loop for asyncio
         self.loop = asyncio.new_event_loop()
@@ -435,6 +436,7 @@ class P2PManager(ReconnectMixin, WSInterface):
                 if clear_bootstrap_state:
                     self._pending_peer_list = None
                 self._peer_recovery_locks.clear()
+                self._turn_route_index.clear()
                 with self._live_connections_lock:
                     self.live_connections = 0
         finally:
@@ -483,6 +485,7 @@ class P2PManager(ReconnectMixin, WSInterface):
         for old_pid in stale_ids:
             self._clear_peer_ack(old_pid)
             self._ack_capable_peers.discard(old_pid)
+            self._turn_route_index.pop(old_pid, None)
             timer = self._peer_disconnect_grace_handles.pop(old_pid, None)
             if timer is not None:
                 timer.cancel()
@@ -573,6 +576,11 @@ class P2PManager(ReconnectMixin, WSInterface):
                 return
 
             await asyncio.to_thread(self._refresh_ice_servers)
+            # When aioice's one TURN candidate is blocked, the next ICE
+            # reconstruction must try the next verified Cloudflare route.
+            self._turn_route_index[remote_peer_id] = (
+                self._turn_route_index.get(remote_peer_id, 0) + 1
+            )
             pc = self._create_peer_connection(remote_peer_id)
             self.peer_connections[remote_peer_id] = pc
 
@@ -592,7 +600,8 @@ class P2PManager(ReconnectMixin, WSInterface):
             self.config.data.get("cookie"),
             verify=requests_verify_arg(self.config),
         )
-        # aioice picks one TURN URL, selected in the helper.
+        # Preserve verified alternatives in RAM; only ONE TURN entry is
+        # selected for each aiortc connection (aioice's actual limit).
         self._ice_servers = [RTCIceServer(**entry) for entry in servers]
         self._ice_expiry = expiry
         self._ice_turn_ready = has_turn
@@ -601,11 +610,21 @@ class P2PManager(ReconnectMixin, WSInterface):
         """
         Create and return a new RTCPeerConnection, wired up with ICE-candidate and data-channel handling.
         """
+        stun_servers = []
+        turn_servers = []
+        for entry in self._ice_servers:
+            uris = entry.urls if isinstance(entry.urls, list) else [entry.urls]
+            if any(u.startswith(("turn:", "turns:")) for u in uris):
+                turn_servers.append(entry)
+            else:
+                stun_servers.append(entry)
+        if not stun_servers and not turn_servers and self.config.data.get("stun_url"):
+            stun_servers = [RTCIceServer(urls=[self.config.data["stun_url"]])]
+        selected_turn = ([turn_servers[
+            self._turn_route_index.get(remote_peer_id, 0) % len(turn_servers)
+        ]] if turn_servers else [])
         pc = RTCPeerConnection(
-            configuration=RTCConfiguration(
-                iceServers=list(self._ice_servers) if self._ice_servers else
-                [RTCIceServer(urls=[self.config.data["stun_url"]])]
-            )
+            configuration=RTCConfiguration(iceServers=stun_servers + selected_turn)
         )
 
         @pc.on("icecandidate")
