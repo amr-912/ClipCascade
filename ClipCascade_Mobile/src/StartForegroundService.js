@@ -1464,9 +1464,19 @@ module.exports = async (inputData = null) => {
               await setupDataChannel(remotePeerId, channel);
             };
 
+            let lastIcePathWasConnected = false;
             const checkPeerConnectivity = () => {
               const st = pc.connectionState;
               const ice = pc.iceConnectionState;
+              const isConnected = st === 'connected' || ice === 'connected' ||
+                ice === 'completed';
+              // Invalidate previously verified route on every connection loss,
+              // including after the initial stats collection timer has fired.
+              if (!isConnected && lastIcePathWasConnected) {
+                setDataInAsyncStorage('p2pIceSelectedRoute', 'unverified')
+                  .catch(() => {});
+              }
+              lastIcePathWasConnected = isConnected;
               // Some Android VPN/network transitions first surface in ICE
               // state, before RTCPeerConnection.connectionState updates.
               // Query selected ICE pair after connection. Never serialize the
