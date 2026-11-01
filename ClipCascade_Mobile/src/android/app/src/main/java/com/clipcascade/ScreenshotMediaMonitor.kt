@@ -186,7 +186,15 @@ internal class ScreenshotMediaMonitor(
                     }
                     val uri = ContentUris.withAppendedId(mediaUri, id)
                     if (!active) break
-                    // Mark first: observers often fire repeatedly for one screenshot.
+                    // Do not mark a screenshot delivered until the event is
+                    // actually emitted. A bridge exception must be retryable.
+                    try {
+                        deliver(uri)
+                    } catch (_: Exception) {
+                        needsRetry = true
+                        if (earliestIncompleteId == null) earliestIncompleteId = id
+                        continue
+                    }
                     delivered.add(id)
                     // Bound de-dup metadata for months-long foreground sessions.
                     if (delivered.size > 2048) {
@@ -195,7 +203,6 @@ internal class ScreenshotMediaMonitor(
                         delivered.removeAll { it < floor }
                         baselineId = maxOf(baselineId, floor - 1)
                     }
-                    deliver(uri)
                 }
                 // Progress the high-water mark without skipping unfinished
                 // screenshots. Normal camera/gallery additions are never sent.
@@ -206,7 +213,9 @@ internal class ScreenshotMediaMonitor(
                 }
             }
         } catch (_: Exception) {
-            // Losing media access (permission revoked) must not expose any data.
+            // Provider queries can fail transiently during photo finalization.
+            // Retry a bounded number of times without walking old history.
+            needsRetry = true
         } finally {
             scanInFlight = false
             if (active && needsRetry && incompleteRetries < maxIncompleteRetries) {
