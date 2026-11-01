@@ -96,3 +96,14 @@ def test_aiortc_production_rotates_one_turn_per_peer_and_clears_stale_route():
     assert 'self._turn_route_index[remote_peer_id] = (' in code
     assert 'self._turn_route_index.pop(old_pid, None)' in code
     assert 'iceServers=stun_servers + selected_turn' in code
+
+
+def test_worker_route_toml_is_valid_and_scoped_to_one_issuer_prefix():
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "cloudflare" / "turn-issuer" / "wrangler.toml").read_text(encoding="utf-8"))
+    assert config["routes"] == [
+        {"pattern": "sync.world-honey.com/ice-servers*", "zone_name": "world-honey.com"}
+    ]
