@@ -26,9 +26,17 @@ const classifySelectedIcePath = report => {
   }
   if (!pair || pair.type !== 'candidate-pair') return 'unverified';
   const local = indexed.get(pair.localCandidateId);
-  if (!local || local.type !== 'local-candidate') return 'unverified';
-  if (local.candidateType === 'relay') return 'relay-selected';
-  if (['host', 'srflx', 'prflx'].includes(local.candidateType))
+  const remote = indexed.get(pair.remoteCandidateId);
+  if (local?.type === 'local-candidate' && local.candidateType === 'relay')
+    return 'relay-selected';
+  if (remote?.type === 'remote-candidate' && remote.candidateType === 'relay')
+    return 'relay-selected';
+  // A locally-direct candidate can still connect to a remote relay.
+  // Only claim a direct path when BOTH candidate types are known and direct.
+  const direct = new Set(['host', 'srflx', 'prflx']);
+  if (local?.type === 'local-candidate' &&
+      remote?.type === 'remote-candidate' &&
+      direct.has(local.candidateType) && direct.has(remote.candidateType))
     return 'direct-selected';
   return 'unverified';
 };
