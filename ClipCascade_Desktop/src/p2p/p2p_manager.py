@@ -14,7 +14,8 @@ from utils.cipher_manager import CipherManager
 from clipboard.clipboard_manager import ClipboardManager
 from utils.notification_manager import NotificationManager
 from utils.request_manager import RequestManager
-from utils.ssl_helper import websocket_sslopt_for_config
+from utils.ssl_helper import websocket_sslopt_for_config, requests_verify_arg
+from p2p.ice_server_config import fetch_ice_servers
 from core.constants import *
 from aiortc import (
     RTCPeerConnection,
@@ -79,6 +80,10 @@ class P2PManager(ReconnectMixin, WSInterface):
         # immediately. Runs only on the asyncio signaling loop.
         self._peer_disconnect_grace_handles: Dict[str, asyncio.TimerHandle] = {}
         self._dc_heartbeat_handle: Optional[asyncio.TimerHandle] = None
+        # Ephemeral TURN credentials in RAM only; never saved or included in logs.
+        self._ice_servers = []
+        self._ice_expiry = 0.0
+        self._ice_turn_ready = False
 
         # Event loop for asyncio
         self.loop = asyncio.new_event_loop()
@@ -174,6 +179,9 @@ class P2PManager(ReconnectMixin, WSInterface):
             self.schedule_task(self._prepare_reconnect_bootstrap()).result(timeout=90)
             if self.disconnected:
                 return False, "Websocket disconnected"
+            # Refresh before signaling to avoid STUN-only ICE candidates on a
+            # VPN that would otherwise need a TURN relay.
+            self._refresh_ice_servers()
             self.ws_client = websocket.WebSocketApp(
                 url=self.config.data["websocket_url"],
                 header={"Cookie": RequestManager.format_cookie(self.config.data["cookie"])},
@@ -551,6 +559,7 @@ class P2PManager(ReconnectMixin, WSInterface):
             ):
                 return
 
+            await asyncio.to_thread(self._refresh_ice_servers)
             pc = self._create_peer_connection(remote_peer_id)
             self.peer_connections[remote_peer_id] = pc
 
@@ -560,13 +569,29 @@ class P2PManager(ReconnectMixin, WSInterface):
                 self._setup_data_channel(remote_peer_id, channel)
                 await self._create_offer(remote_peer_id)
 
+    def _refresh_ice_servers(self):
+        """Fetch expiring authenticated credentials from /ice-servers (max 4s)."""
+        if time.time() < self._ice_expiry:
+            return
+        servers, expiry, has_turn = fetch_ice_servers(
+            self.config.data.get("server_url"),
+            self.config.data.get("stun_url", ""),
+            self.config.data.get("cookie"),
+            verify=requests_verify_arg(self.config),
+        )
+        # aioice picks one TURN URL, selected in the helper.
+        self._ice_servers = [RTCIceServer(**entry) for entry in servers]
+        self._ice_expiry = expiry
+        self._ice_turn_ready = has_turn
+
     def _create_peer_connection(self, remote_peer_id: str) -> RTCPeerConnection:
         """
         Create and return a new RTCPeerConnection, wired up with ICE-candidate and data-channel handling.
         """
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(
-                iceServers=[RTCIceServer(urls=[self.config.data["stun_url"]])]
+                iceServers=list(self._ice_servers) if self._ice_servers else
+                [RTCIceServer(urls=[self.config.data["stun_url"]])]
             )
         )
 
@@ -689,6 +714,7 @@ class P2PManager(ReconnectMixin, WSInterface):
                 return
             if from_peer_id in self.peer_connections:
                 await self._dispose_peer_connection(from_peer_id)
+            await asyncio.to_thread(self._refresh_ice_servers)
             pc = self._create_peer_connection(from_peer_id)
             self.peer_connections[from_peer_id] = pc
 
