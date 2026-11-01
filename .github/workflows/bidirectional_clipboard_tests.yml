@@ -61,7 +61,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install pytest pillow requests
-      - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py tests/test_ice_server_config.py
+      - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py tests/test_ice_server_config.py tests/test_desktop_preview_update.py
 
   backend-turn:
     name: Compile authenticated TURN credential issuer (Spring Boot JDK 21)
