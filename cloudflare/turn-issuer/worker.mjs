@@ -46,16 +46,44 @@ export async function issueIceServers(request, env, fetcher = fetch) {
   try {
     // Auth check uses the same ClipCascade server session, not a second
     // static token. Never follow redirects to a login page as a valid user.
-    const authUrl = new URL('/whoami', authOrigin);
+    // The original Spring server implements /whoami, while the deployed
+    // Cloudflare P2P relay may implement /validate-session instead. Operators
+    // must explicitly select the validated contract; a mere HTTP 200 never
+    // grants TURN credentials without a recognized positive response.
+    const authMode = env?.CLIPCASCADE_AUTH_MODE || 'whoami';
+    if (authMode !== 'whoami' && authMode !== 'validate-session') {
+      return json({available: false, reason: 'AUTH_MODE_INVALID'}, 503);
+    }
+    const authPath = authMode === 'whoami' ? '/whoami' : '/validate-session';
+    const authUrl = new URL(authPath, authOrigin);
     const auth = await fetcher(authUrl.toString(), {
       method: 'GET', redirect: 'manual',
       headers: {'Cookie': cookie, 'Accept': 'application/json'},
       cache: 'no-store',
     });
     if (auth.status !== 200) return json({error: 'AUTH_REQUIRED'}, 401);
-    const identity = await auth.json();
-    if (!identity || typeof identity.username !== 'string' ||
-        !identity.username.length) return json({error: 'AUTH_REQUIRED'}, 401);
+    let authorized = false;
+    if (authMode === 'whoami') {
+      const identity = await auth.json();
+      authorized = !!identity && typeof identity.username === 'string' &&
+        identity.username.length > 0;
+    } else {
+      const confirmation = await auth.text();
+      if (confirmation.length <= 2048) {
+        const trimmed = confirmation.trim();
+        // Explicit affirmative contracts only. Never accept a login page,
+        // an arbitrary 200 response, or a JSON "valid":false result.
+        if (trimmed === 'OK' || trimmed === '"OK"') authorized = true;
+        else if (trimmed.startsWith('{')) {
+          try {
+            const obj = JSON.parse(trimmed);
+            authorized = obj?.valid === true ||
+              (obj?.authenticated === true && obj?.status === 'valid');
+          } catch (_) { /* fail closed */ }
+        }
+      }
+    }
+    if (!authorized) return json({error: 'AUTH_REQUIRED'}, 401);
 
     const credentialUrl = 'https://rtc.live.cloudflare.com/v1/turn/keys/' +
       encodeURIComponent(key) + '/credentials/generate-ice-servers';
