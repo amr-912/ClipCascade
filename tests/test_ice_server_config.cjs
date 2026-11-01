@@ -21,7 +21,7 @@ const payload = {
 test('Android uses short-lived authenticated TURN, never exposed master token', () => {
   const p = normalizeIceResponse(payload, 'stun:custom.example:3478');
   assert.equal(p.hasTurn, true);
-  assert.equal(p.servers.some(s => s.urls.some(u => u.startsWith('turns:'))), true);
+  assert.equal(p.servers.some(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).some(u => u.startsWith('turns:'))), true);
   const src = fs.readFileSync(path.join(root,
     'ClipCascade_Mobile/src/IceServerConfig.js'), 'utf8');
   assert.doesNotMatch(src, /CLIPCASCADE_TURN_API_TOKEN|TURN_KEY_API_TOKEN|generate-ice-servers/);
