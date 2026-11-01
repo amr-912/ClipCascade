@@ -21,9 +21,11 @@ def test_tls_over_tcp_443_wins_on_aiortc_with_stun_still_available():
     servers, expiry, has_turn = normalize_ice_servers(
         mock_payload(), "stun:stun.example:3478", now=1000)
     assert has_turn
-    assert servers[-1]["urls"] == ["turns:turn.cloudflare.com:443?transport=tcp"]
-    assert servers[-1]["username"] == "temporary-user"
-    assert servers[-1]["credential"] == "temporary-token"
+    turn_routes = [x for x in servers if x["urls"][0].startswith(("turn:", "turns:"))]
+    assert turn_routes[0]["urls"] == ["turns:turn.cloudflare.com:443?transport=tcp"]
+    assert len(turn_routes) >= 2  # TLS443, then UDP/TCP fallbacks
+    assert all(x["username"] == "temporary-user" and
+               x["credential"] == "temporary-token" for x in turn_routes)
     assert any(s["urls"] == ["stun:stun.example:3478"] for s in servers)
     assert 1000 < expiry <= 1000 + 2700
 
@@ -82,3 +84,15 @@ def test_refuse_plain_http_remote_turn_credentials():
         request_get=forbidden, now=1000)
     assert not relay
     assert len(ice) == 1
+
+
+
+def test_aiortc_production_rotates_one_turn_per_peer_and_clears_stale_route():
+    source = (os.path.join(os.path.dirname(__file__), "..", "ClipCascade_Desktop",
+                           "src", "p2p", "p2p_manager.py"))
+    with open(source, encoding="utf-8") as handle:
+        code = handle.read()
+    assert 'self._turn_route_index.get(remote_peer_id, 0) % len(turn_servers)' in code
+    assert 'self._turn_route_index[remote_peer_id] = (' in code
+    assert 'self._turn_route_index.pop(old_pid, None)' in code
+    assert 'iceServers=stun_servers + selected_turn' in code
