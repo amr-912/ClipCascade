@@ -64,6 +64,21 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install pytest pillow requests
       - run: python -m pytest -q tests/test_clipboard_p2p_backpressure.py tests/test_ice_server_config.py tests/test_desktop_preview_update.py tests/test_p2p_receipt_ack.py
+      - name: Verify safe existing-session TURN diagnostic on Windows (no network)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "ClipCascade-DATA-fixture"
+          @{server_url="https://sync.world-honey.com";cookie=@{JSESSIONID="fixture-cookie-do-not-print-123"}} | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $fixture
+          $output = & ./tools/Diagnose-ClipCascadeTurn.ps1 -DataPath $fixture -InspectOnly
+          $joined = $output -join "`n"
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "PowerShell probe failed" }
+          if ($joined -notmatch "RESULT=INSPECT_ONLY_NO_NETWORK") { throw "Valid session fixture not detected" }
+          if ($joined -match "fixture-cookie|JSESSIONID=") { throw "Probe disclosed credentials" }
+          @{server_url="https://untrusted.example";cookie=@{JSESSIONID="fixture-cookie-do-not-print-123"}} | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $fixture
+          $rejected = (& ./tools/Diagnose-ClipCascadeTurn.ps1 -DataPath $fixture) -join "`n"
+          if ($rejected -notmatch "RESULT=SERVER_HOST_MISMATCH") { throw "Probe did not reject foreign host" }
+
 
   backend-turn:
     name: Compile authenticated TURN credential issuer (Spring Boot JDK 21)
@@ -179,8 +194,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force desktop-preview | Out-Null
           Copy-Item ClipCascade_Desktop/src/dist/ClipCascade.exe desktop-preview/ClipCascade-Preview.exe
+          Copy-Item tools/Diagnose-ClipCascadeTurn.ps1 desktop-preview/Diagnose-ClipCascadeTurn.ps1
           "source_commit=$(git rev-parse HEAD)" | Set-Content desktop-preview/BUILD_INFO.txt
           "PORTABLE PREVIEW. Not an MSI. Stop stable before testing and backup DATA." | Add-Content desktop-preview/BUILD_INFO.txt
+          "Diagnostic only: Diagnose-ClipCascadeTurn.ps1 can read the existing desktop DATA session without logging in or printing credentials." | Add-Content desktop-preview/BUILD_INFO.txt
           (Get-FileHash desktop-preview/ClipCascade-Preview.exe -Algorithm SHA256).Hash | Set-Content desktop-preview/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
