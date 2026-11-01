@@ -17,6 +17,7 @@ import {
   RTCSessionDescription,
 } from 'react-native-webrtc';
 import Clipboard from '@react-native-clipboard/clipboard';
+const {loadIceServerConfig} = require('./IceServerConfig');
 import {checkForUpdates} from './UpdateChecker';
 
 import {
@@ -1343,13 +1344,14 @@ module.exports = async (inputData = null) => {
            * Create and return a RTCPeerConnection, set up listeners for ICE + DataChannel.
            */
           const createPeerConnection = async remotePeerId => {
-            const pc = new RTCPeerConnection({
-              iceServers: [
-                {
-                  urls: stun_url,
-                },
-              ],
-            });
+            // Fetch short-lived, session-authenticated TURN credentials before
+            // each new connection; the helper caches them only in RAM. When the
+            // issuer is not configured, ordinary STUN P2P remains available.
+            const endpoint = await getDataFromAsyncStorage('server_url');
+            const ice = await loadIceServerConfig(endpoint, stun_url);
+            await setDataInAsyncStorage('p2pIceMode',
+              ice.hasTurn ? 'turn-configured' : 'direct-only');
+            const pc = new RTCPeerConnection({iceServers: ice.servers});
 
             pc.onicecandidate = async event => {
               if (event.candidate) {
