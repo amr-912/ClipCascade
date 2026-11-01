@@ -1,0 +1,17 @@
+# Optional separate Worker deployment. Does NOT replace signaling or auth.
+# The Cloudflare zone must be owned/authorized by the operator.
+name = "clipcascade-turn-issuer"
+main = "worker.mjs"
+compatibility_date = "2026-11-01"
+workers_dev = false
+
+routes = [
+  { pattern = "sync.world-honey.com/ice-servers*", zone_name = "world-honey.com" }
+]
+
+[vars]
+CLIPCASCADE_AUTH_ORIGIN = "https://sync.world-honey.com/"
+
+# Never put TURN_KEY_ID or TURN_KEY_API_TOKEN here!
+# Use: wrangler secret put TURN_KEY_ID
+#      wrangler secret put TURN_KEY_API_TOKEN
