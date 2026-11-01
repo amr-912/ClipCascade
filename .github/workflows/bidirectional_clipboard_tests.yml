@@ -154,3 +154,35 @@ jobs:
           path: android-preview/*
           if-no-files-found: error
           retention-days: 14
+
+  windows-preview:
+    name: Package portable Windows TURN preview (isolated, no MSI)
+    runs-on: windows-latest
+    needs: [android-native]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - name: Install pinned desktop build dependencies
+        working-directory: ClipCascade_Desktop/src
+        run: |
+          python -m pip install pyinstaller
+          python -m pip install -r requirements_win.txt
+      - name: Package a standalone non-installing preview binary
+        working-directory: ClipCascade_Desktop/src
+        run: python -m PyInstaller ClipCascade_win.spec --noconfirm
+      - name: Stage code identity and SHA256
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desktop-preview | Out-Null
+          Copy-Item ClipCascade_Desktop/src/dist/ClipCascade.exe desktop-preview/ClipCascade-Preview.exe
+          "source_commit=$(git rev-parse HEAD)" | Set-Content desktop-preview/BUILD_INFO.txt
+          "PORTABLE PREVIEW. Not an MSI. Stop stable before testing and backup DATA." | Add-Content desktop-preview/BUILD_INFO.txt
+          (Get-FileHash desktop-preview/ClipCascade-Preview.exe -Algorithm SHA256).Hash | Set-Content desktop-preview/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipCascade-Windows-Portable-TURN-Preview
+          path: desktop-preview/*
+          if-no-files-found: error
+          retention-days: 14
