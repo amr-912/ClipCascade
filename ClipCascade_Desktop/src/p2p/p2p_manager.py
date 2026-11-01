@@ -925,9 +925,10 @@ class P2PManager(ReconnectMixin, WSInterface):
 
             previous_hash = self.clipboard_manager.previous_clipboard_hash
             if not replay:
-                self._clear_all_acks()
                 if not self.clipboard_manager.has_clipboard_changed(payload):
                     return
+                # Only a genuinely NEW copy supersedes in-flight receipt ACKs.
+                self._clear_all_acks()
             elif expected_hash is not None and previous_hash != expected_hash:
                 return
             sent_hash = self.clipboard_manager.previous_clipboard_hash
