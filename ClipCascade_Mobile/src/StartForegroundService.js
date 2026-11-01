@@ -1246,22 +1246,28 @@ module.exports = async (inputData = null) => {
             peers = updatedPeers;
             await removeStalePeers(updatedPeers);
 
-            peers.forEach(async pid => {
-              if (pid === myPeerId) return; // skip self
-              if (!peerConnections[pid]) {
-                // Create new PeerConnection
+            // Await each peer setup and serialize it with recovery/OFFER handling.
+            // An async forEach can race repeated PEER_LIST messages during VPN
+            // reconnect: both see an absent PC before ICE credential fetch.
+            for (const pid of updatedPeers) {
+              if (pid === myPeerId) continue;
+              await runSerializedPeerOp(pid, async () => {
+                if (p2pShuttingDown || !myPeerId || !peers.has(pid) ||
+                    peerConnections[pid]) return;
                 const pc = await createPeerConnection(pid);
+                if (p2pShuttingDown || !peers.has(pid)) {
+                  pc.close();
+                  return;
+                }
                 peerConnections[pid] = pc;
-
-                // Tie-breaker: only the "lower" ID makes the offer to avoid collisions
                 if (myPeerId < pid) {
                   const channel = await pc.createDataChannel('cliptext');
                   dataChannels[pid] = channel;
                   await setupDataChannel(pid, channel);
                   await createOffer(pid);
                 }
-              }
-            });
+              });
+            }
           };
 
           /**
