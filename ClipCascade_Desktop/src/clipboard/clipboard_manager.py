@@ -177,24 +177,32 @@ class ClipboardManager:
         except Exception as e:
             logging.error(f"Failed to convert clipboard data to base64: {e}")
 
-    def base64_to_clipboard(self, base64_string: str, type_: str = "text"):
+    def base64_to_clipboard(self, base64_string: str, type_: str = "text") -> bool:
+        """True ONLY after clipboard data was accepted, not merely decoded.
+
+        P2P receipt ACKs depend on this return value. A rejected/failed write
+        must remain unacknowledged and must not poison the hash de-duplicator.
+        """
         try:
             if type_ == "text":
-                txt = base64_string
-                if self.is_clipboard_size_within_limit(txt, type_):
-                    self.paste(txt, type_)
+                data = base64_string
             elif type_ == "image":
-                img = ClipboardManager.convert_base64_to_image(base64_img=base64_string)
-                if self.is_clipboard_size_within_limit(img, type_):
-                    self.paste(img, type_)
+                data = ClipboardManager.convert_base64_to_image(
+                    base64_img=base64_string
+                )
             elif type_ == "files":
-                file_objects = ClipboardManager.convert_base64_to_files(
+                data = ClipboardManager.convert_base64_to_files(
                     base64_json=base64_string
                 )
-                if self.is_clipboard_size_within_limit(file_objects, type_):
-                    self.paste(file_objects, type_)
+            else:
+                return False
+            if not self.is_clipboard_size_within_limit(data, type_):
+                return False
+            self.paste(data, type_)
+            return True
         except Exception as e:
-            logging.error(f"Failed to convert base64 data to clipboard: {e}")
+            logging.error("Failed to convert base64 data to clipboard: %s", e)
+            return False
 
     @staticmethod
     def execute_command(*args, input_data):
