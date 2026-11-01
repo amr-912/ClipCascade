@@ -1491,7 +1491,11 @@ module.exports = async (inputData = null) => {
                   try {
                     path = classifySelectedIcePath(await pc.getStats());
                   } catch (_) { /* instrumentation must never harm transport */ }
-                  if (!p2pShuttingDown && peerConnections[remotePeerId] === pc)
+                  const stillConnected = pc.connectionState === 'connected' ||
+                    pc.iceConnectionState === 'connected' ||
+                    pc.iceConnectionState === 'completed';
+                  if (!p2pShuttingDown && stillConnected &&
+                      peerConnections[remotePeerId] === pc)
                     await setDataInAsyncStorage('p2pIceSelectedRoute', path);
                 }, 1200);
               } else if ((st === 'disconnected' || ice === 'disconnected' ||
