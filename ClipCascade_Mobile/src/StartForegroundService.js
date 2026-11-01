@@ -949,12 +949,35 @@ module.exports = async (inputData = null) => {
           initializeWebSocketSignalingClient();
 
           // send clipboard content P2P
-          sendClipBoardP2P = async (clipContent, type_ = 'text', replay = false) => {
+          const watchAcknowledgement = (peerId, messageId, original, type, contentHash, attempts) => {
+            clearPeerAck(peerId);
+            pendingAcknowledgements[peerId] = {
+              id: messageId, type, hash: contentHash,
+              timer: setTimeout(async () => {
+                const current = pendingAcknowledgements[peerId];
+                if (!current || current.id !== messageId) return;
+                clearPeerAck(peerId);
+                // Never replay an old screenshot if a newer local copy replaced it.
+                if (previous_clipboard_content_hash !== contentHash) return;
+                if (attempts >= MAX_ACK_RETRIES) {
+                  noteClipboardStage('p2p-' + type + '-unacknowledged');
+                  p2pMsg = '⚠️ ' + type + ' delivery unconfirmed after retries';
+                  await p2pStatusMessageChanged();
+                  return;
+                }
+                await sendClipBoardP2P(original, type, true, attempts + 1, peerId);
+              }, ACK_TIMEOUT_MS),
+            };
+          };
+
+          sendClipBoardP2P = async (clipContent, type_ = 'text',
+              replay = false, ackAttempts = 0, targetPeerId = null) => {
             const originalContent = clipContent;
             try {
               if (!replay) {
                 // The most recent user copy supersedes a stale pending copy.
                 pendingOutboundClipboard = null;
+                clearAllAcks();
               }
               await clearFiles();
               if (
@@ -969,8 +992,9 @@ module.exports = async (inputData = null) => {
               // Signaling may say Connected while WebRTC has no usable channel.
               // In that case keep the latest copy briefly; importantly, do not
               // update previous_clipboard_content_hash until it has been queued.
-              let openChannels = Object.values(dataChannels).filter(
-                ch => ch && ch.readyState === 'open',
+              let openChannels = Object.entries(dataChannels).filter(
+                ([peerId, ch]) => (!targetPeerId || peerId === targetPeerId) &&
+                  ch && ch.readyState === 'open',
               );
               if (openChannels.length === 0) {
                 queueLatestClipboard(originalContent, type_);
@@ -993,7 +1017,7 @@ module.exports = async (inputData = null) => {
               }
 
               const hcb = await hashCB(clipContent);
-              if (!(await newCB(hcb))) return;
+              if (!replay && !(await newCB(hcb))) return;
 
               const rawPayloadSizeInBytes = textEncoder.encode(clipContent).length;
               if (cipher_enabled === 'true') {
@@ -1027,8 +1051,9 @@ module.exports = async (inputData = null) => {
 
                   // Send to every live channel, not async forEach (which
                   // discards rejected promises and cannot enforce ordering).
-                  openChannels = Object.values(dataChannels).filter(
-                    ch => ch && ch.readyState === 'open',
+                  openChannels = Object.entries(dataChannels).filter(
+                    ([peerId, ch]) => (!targetPeerId || peerId === targetPeerId) &&
+                      ch && ch.readyState === 'open',
                   );
                   if (openChannels.length === 0) {
                     queueLatestClipboard(originalContent, type_);
@@ -1036,7 +1061,7 @@ module.exports = async (inputData = null) => {
                     await p2pStatusMessageChanged();
                     return;
                   }
-                  for (const channel of openChannels) {
+                  for (const [, channel] of openChannels) {
                     while (typeof channel.bufferedAmount === 'number' &&
                       channel.bufferedAmount >= 256 * 1024) {
                       if (sendingFragmentId !== metadata.id ||
@@ -1064,6 +1089,12 @@ module.exports = async (inputData = null) => {
                 // application-level acknowledgement by the receiving device.
                 previous_clipboard_content_hash = hcb;
                 noteClipboardStage('p2p-' + type_ + '-queued');
+                for (const [peerId] of openChannels) {
+                  if (ackCapablePeers.has(peerId)) {
+                    watchAcknowledgement(peerId, metadata.id,
+                      originalContent, type_, hcb, ackAttempts);
+                  }
+                }
               } finally {
                 if (sendingFragmentId === metadata.id) {
                   await resetSendingFragmentId();
