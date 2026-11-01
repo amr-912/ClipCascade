@@ -47,12 +47,13 @@ function fakeTransport() {
     sleep: async () => {},
     noteClipboardStage: () => {},
     Date, Object, JSON, String,
+    setTimeout: () => 0, clearTimeout: () => {},
   };
   context.newCB = async hcb => context.previous_clipboard_content_hash !== hcb;
   vm.createContext(context);
   vm.runInContext(
-    segment('          const PENDING_CLIPBOARD_TTL_MS = 90000;', '\n          // Fragment variables') +
-    '\n' + segment("          sendClipBoardP2P = async (clipContent, type_ = 'text', replay = false) => {", '\n          // stop events and connection P2P'),
+    segment('          const ackCapablePeers = new Set();', '\n          // Fragment variables') +
+    '\n' + segment('          // send clipboard content P2P', '\n          // stop events and connection P2P'),
     context
   );
   context.setOpenPeer = () => {
@@ -108,7 +109,7 @@ test('receipt of a remote image cannot consume the next genuine Android copy', a
 });
 
 test('incoming fragments never cancel an unrelated outbound transfer', () => {
-  const incoming = segment('          const onDataChannelMessage = async messageJson => {',
+  const incoming = segment('          const onDataChannelMessage = async (messageJson, remotePeerId = null, channel = null) => {',
     '\n          /**\n           * The server gave us');
   assert.doesNotMatch(incoming, /resetSendingFragmentId\(\)/);
 });
