@@ -6,7 +6,10 @@ compatibility_date = "2026-11-01"
 workers_dev = false
 
 routes = [
-  { pattern = "sync.world-honey.com/ice-servers", zone_name = "world-honey.com" }
+  # Cloudflare route matching includes query strings, so a trailing * is
+# mandatory for /ice-servers?check=... and other legitimate cache busters.
+# worker.mjs enforces pathname === '/ice-servers', rejecting prefixed paths.
+  { pattern = "sync.world-honey.com/ice-servers*", zone_name = "world-honey.com" }, zone_name = "world-honey.com" }
 ]
 
 [vars]
