@@ -15,7 +15,7 @@ replace Windows 3.3.4 merely because an upstream 3.4.1 popup appears.
 | Background observer privacy | Explicit opt-in, full-photo permission, no historical backfill; baseline query fails closed | Screenshot eligibility, startup and permissions | Android 14+ partial vs full access field test pending |
 | Temporary VPN disconnect/reconnect | Existing Android/Windows ICE-state recovery, heartbeat, bounded pending copy and peer setup serialization | JS / Python platform regression | No guaranteed route if direct traffic blocked |
 | **VPN/NAT where STUN cannot connect** | Authenticated TURN credential issuer (Spring **or** optional Cloudflare Worker); both clients fetch short-lived credentials; desktop prefers `turns:...`:443 | Unit tests for Windows/Android/Worker/Spring | **Not operational until TURN account secret is provisioned and issuer is deployed** |
-| End-to-end receipt acknowledgement | Not implemented | No genuine delivery-ACK test | **Not guaranteed**; `queued` is NOT `received` |
+| Application receipt ACK after clipboard acceptance | Negotiated `_cc_keepalive.ackProtocol`, `_cc_ack` per peer, bounded retries/dedupe on Android and Windows | Platform sender/receiver callback tests in JS/Python; legacy clients ignore extension | **Hardware cross-device receipt still pending**; ACK is not a guarantee of persistence after process crash |
 | Upstream update notice separation | Android/Windows fork Preview ignores incompatible upstream release prompts | Unit/source CI | Official upstream installations unchanged |
 | Server authenticated session | Existing Spring `/whoami`, required for optional Worker validation | Worker rejects invalid sessions, redirects | User session lifetime/network conditions still require field verification |
 
@@ -61,8 +61,9 @@ Official ephemeral credential contract:
 https://developers.cloudflare.com/realtime/turn/generate-credentials/
 
 Android uses session-authenticated fetch to obtain ICE servers (RAM cache).
-Windows selects TLS/TCP 443 first from Cloudflare's available list because
-aiortc can only use one TURN candidate. When the issuer is unconfigured both
+Windows selects TLS/TCP 443 first, then rotates through separately validated
+TURN alternatives upon ICE reconstruction; aiortc only uses one TURN URI per
+connection. When the issuer is unconfigured both
 clients retain direct STUN connectivity; **that is not VPN universal support**.
 
 ## Delivery + release blockers (do not skip)
@@ -82,8 +83,9 @@ clients retain direct STUN connectivity; **that is not VPN universal support**.
   auto-transfer and disabling feature revokes monitoring.
 - Test first launch, restart, OS battery optimization, airplane mode, app
   restart, session expiry and mixed-version rollback.
-- For full reliability add an application-level receipt ACK with bounded
-  retransmission/deduplication. P2P `send()` alone is not receipt.
+- Application-level receipt ACK with bounded retransmission/deduplication has
+  been implemented for both clients, but still REQUIRES mixed-version and
+  physical-network confirmation. P2P `send()` alone is never receipt.
 - Preserve existing stable Windows 3.3.4 and Android official app; Preview
   artifacts are separately signed or portable and do not replace either.
 - **No patch to main or upstream PR while any gate is missing.** Upstream
@@ -105,3 +107,27 @@ same source commit, accompanied by CI results, a read-only test checklist,
 a tested cloud TURN route and a rollback procedure. After passing private
 network and Samsung acceptance, freeze a tag and release. Until then, source
 preservation and green unit tests are not production proof.
+
+
+## 2026-11-01 ACK continuation after chat interruption
+
+Earlier validated unified build SHA `791697bb2a5383a0503011e5d307bc4a9bfbc8a4`
+passed all six CI jobs and produced both Android/Windows preview artifacts.
+It **predates ACK**, so the user must not treat those artifacts as the final
+unified release.
+
+Recovery after interrupted chat: the ACK commits after that SHA are backed up
+on GitHub branch `test/screenshot-preview-release-2026-10-30`. The first
+attempts failed because the old JS test fixture cut functions at an obsolete
+signature; that harness was fixed and now exercises real ACK-era code. The
+Windows receiver has a truthful clipboard-apply boolean: rejected images
+never produce ACK and do not poison the duplicate-suppression hash. Both
+senders preserve pending ACK timers for repeated identical clipboard monitor
+events, retry only the missing peer and never replay stale copies over new
+local clipboard content. Legacy clients continue working without ACK.
+
+Cloudflare Realtime docs confirm (1) time-limited TURN credentials require a
+server-side key, (2) `turns:...:443?transport=tcp` is supported, (3) TURN
+relaying without Realtime SFU is billed; do not assume TURN is free.
+The server-side or Worker issuer remains **not deployed**, pending authorized
+Cloudflare account provisioning. No irreversible production change made.
