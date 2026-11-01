@@ -160,3 +160,73 @@ def test_vpn_disconnection_recovery_grace_is_bounded_and_cancelled_on_teardown()
     assert "self._peer_disconnect_grace_handles.clear()" in source
     assert "self._peer_disconnect_grace_handles.pop(peer_id, None)" in source
     assert "self._recover_peer_transport(remote_peer_id, pc)" in source
+
+
+
+def test_duplicate_copy_does_not_cancel_outstanding_receipt_ack():
+    mgr = get_sender()()
+    ch = Channel()
+    mgr.data_channels = {"phone": ch}
+    mgr._ack_capable_peers.add("phone")
+    mgr.config = types.SimpleNamespace(data={"cipher_enabled": False})
+    state = {"hash": ""}
+
+    def changed(text):
+        if text == state["hash"]:
+            return False
+        state["hash"] = text
+        return True
+
+    class Clipboard:
+        has_clipboard_changed = staticmethod(changed)
+
+        @property
+        def previous_clipboard_hash(self):
+            return state["hash"]
+
+        @previous_clipboard_hash.setter
+        def previous_clipboard_hash(self, value):
+            state["hash"] = value
+
+    mgr.clipboard_manager = Clipboard()
+    mgr.loop = types.SimpleNamespace(call_later=lambda _secs, _fn: types.SimpleNamespace(cancel=lambda: None))
+    mgr._pending_outbound_clipboard = None
+    mgr.reset_sending_fragment_id = lambda: setattr(mgr, "sending_fragment_id", "")
+    mgr.sending_fragment_id = ""
+    mgr.sending_fragment_stats = None
+
+    async def scenario():
+        await mgr._send("new copied note", "text")
+        old_id = mgr._pending_acks["phone"]["id"]
+        await mgr._send("new copied note", "text")
+        assert mgr._pending_acks["phone"]["id"] == old_id
+        assert len(ch.sent) == 1
+        await mgr._send("a different note", "text")
+        assert mgr._pending_acks["phone"]["id"] != old_id
+        assert len(ch.sent) == 2
+    asyncio.run(scenario())
+
+
+def test_ack_retransmission_targets_only_missing_peer():
+    mgr = get_sender()()
+    first, second = Channel(), Channel()
+    mgr.data_channels = {"phone": first, "laptop": second}
+    mgr._ack_capable_peers.update({"phone", "laptop"})
+    mgr.config = types.SimpleNamespace(data={"cipher_enabled": False})
+    mgr.clipboard_manager = types.SimpleNamespace(
+        has_clipboard_changed=lambda p: True,
+        previous_clipboard_hash=777,
+    )
+    mgr.loop = types.SimpleNamespace(call_later=lambda _secs, _fn: types.SimpleNamespace(cancel=lambda: None))
+    mgr._pending_outbound_clipboard = None
+    mgr.reset_sending_fragment_id = lambda: setattr(mgr, "sending_fragment_id", "")
+    mgr.sending_fragment_id = ""
+    mgr.sending_fragment_stats = None
+
+    async def scenario():
+        await mgr._send("photo data", "image")
+        assert len(first.sent) == 1 and len(second.sent) == 1
+        await mgr._send("photo data", "image", replay=True, attempts=1,
+                        target_peer_id="phone", expected_hash=777)
+        assert len(first.sent) == 2 and len(second.sent) == 1
+    asyncio.run(scenario())
