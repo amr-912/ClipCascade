@@ -18,6 +18,7 @@ on:
       - 'ClipCascade_Server/ClipCascade_Backend/src/main/java/**'
       - 'tests/test_ice_server_config.py'
       - 'tests/test_ice_server_config.cjs'
+      - 'tests/test_android_receipt_ack.cjs'
       - 'tests/test_turn_worker.mjs'
       - 'cloudflare/turn-issuer/**'
       - 'ClipCascade_Server/ClipCascade_Backend/src/test/java/**'
@@ -47,7 +48,7 @@ jobs:
       - name: Parse full service script
         run: node --check ClipCascade_Mobile/src/StartForegroundService.js && node --check ClipCascade_Mobile/src/IceServerConfig.js
       - name: Run transfer and native-bridge regression tests
-        run: node --test tests/test_android_clipboard_transport.cjs tests/test_ice_server_config.cjs tests/test_turn_worker.mjs
+        run: node --test tests/test_android_clipboard_transport.cjs tests/test_ice_server_config.cjs tests/test_turn_worker.mjs tests/test_android_receipt_ack.cjs
 
   windows-p2p:
     name: Windows P2P regressions (${{ matrix.os }})
