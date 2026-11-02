@@ -70,3 +70,50 @@ test('Android preview never opens upstream update APK links', () => {
   assert.match(c, /com\.clipcascade\.preview/);
   assert.match(c, /if \(isForkPreview\(\)\) return Promise\.resolve/);
 });
+
+test('Android concurrent TURN discovery never borrows credentials from another server', async () => {
+  let releaseFirst;
+  const firstFetch = new Promise(resolve => {releaseFirst = resolve;});
+  const first = loadIceServerConfig('https://ice-alpha.example',
+    'stun:alpha.example:3478', {
+      fetcher: () => firstFetch,
+    });
+  let secondCalls = 0;
+  const secondOpts = {
+    fetcher: async () => {
+      secondCalls++;
+      return {ok: true, json: async () => payload};
+    },
+  };
+  const second = loadIceServerConfig('https://ice-beta.example',
+    'stun:beta.example:3478', secondOpts);
+  assert.equal((await second).hasTurn, true);
+  assert.equal(secondCalls, 1);
+  releaseFirst({ok: true, json: async () => payload});
+  assert.equal((await first).hasTurn, true);
+  // A previous request completing must not poison the next server's cache or
+  // cause it to reuse another server's outstanding response.
+  await loadIceServerConfig('https://ice-beta.example',
+    'stun:beta.example:3478', secondOpts);
+  assert.ok(secondCalls >= 1);
+});
+
+test('Android late completion of old endpoint must not clear newer in-flight TURN request', async () => {
+  let releaseOld, releaseNew;
+  const oldResponse = new Promise(resolve => {releaseOld = resolve;});
+  const newResponse = new Promise(resolve => {releaseNew = resolve;});
+  const oldCall = loadIceServerConfig('https://ice-old.example',
+    'stun:old.example:3478', {fetcher: () => oldResponse});
+  let newCalls = 0;
+  const newOptions = {fetcher: () => {newCalls++; return newResponse;}};
+  const newCall = loadIceServerConfig('https://ice-new.example',
+    'stun:new.example:3478', newOptions);
+  releaseOld({ok: true, json: async () => payload});
+  await oldCall;
+  const concurrentNew = loadIceServerConfig('https://ice-new.example',
+    'stun:new.example:3478', newOptions);
+  assert.equal(newCalls, 1, 'same pending endpoint must share one request');
+  releaseNew({ok: true, json: async () => payload});
+  assert.equal((await newCall).hasTurn, true);
+  assert.equal((await concurrentNew).hasTurn, true);
+});
