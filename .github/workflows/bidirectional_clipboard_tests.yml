@@ -86,6 +86,39 @@ jobs:
           if ($rejected -notmatch "RESULT=SERVER_HOST_MISMATCH") { throw "Probe did not reject foreign host" }
 
 
+      - name: Check existing Windows session metadata offline with safe fixtures
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'clipcascade-offline-session-fixture.json'
+          function New-SafeFixture([long]$expiry, [string]$subject) {
+            $body = @{v=1;sub=$subject;auth='fixture-auth';csrf='fixture-csrf';exp=$expiry} | ConvertTo-Json -Compress
+            $part = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($body)).TrimEnd('=').Replace('+','-').Replace('/','_')
+            $cookie = $part + '.' + ('A' * 43)
+            @{server_url='https://sync.world-honey.com';username='safe-operator';cookie=@{JSESSIONID=$cookie}} |
+              ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $fixture
+            return $cookie
+          }
+          $cookie = New-SafeFixture 4102444800 'safe-operator'
+          $report = (& ./tools/Inspect-ClipCascadeSessionOffline.ps1 -DataPath $fixture) -join "`n"
+          if ($report -notmatch 'RESULT=LOCAL_METADATA_ONLY' -or
+              $report -notmatch 'SESSION_FORMAT=SIGNED_TWO_PART_CANDIDATE' -or
+              $report -notmatch 'SUBJECT_MATCHES_LOCAL_CONFIG=True' -or
+              $report -notmatch 'EXPIRED_BY_PAYLOAD_TIME=False' -or
+              $report -notmatch 'SIGNATURE_VERIFIED=False' -or
+              $report -notmatch 'NETWORK_REQUESTS=0') { throw 'Offline session metadata check failed' }
+          if ($report.Contains($cookie) -or $report -match 'fixture-auth|fixture-csrf|safe-operator|JSESSIONID=') {
+            throw 'Offline inspector leaked private session data'
+          }
+          $null = New-SafeFixture 1000 'another-user'
+          $expired = (& ./tools/Inspect-ClipCascadeSessionOffline.ps1 -DataPath $fixture) -join "`n"
+          if ($expired -notmatch 'EXPIRED_BY_PAYLOAD_TIME=True' -or
+              $expired -notmatch 'SUBJECT_MATCHES_LOCAL_CONFIG=False') { throw 'Expired or subject mismatch not detected' }
+          @{server_url='https://untrusted.example';username='safe-operator';cookie=@{JSESSIONID=$cookie}} |
+            ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $fixture
+          $untrusted = (& ./tools/Inspect-ClipCascadeSessionOffline.ps1 -DataPath $fixture) -join "`n"
+          if ($untrusted -notmatch 'RESULT=SERVER_HOST_MISMATCH') { throw 'Unexpected origin was accepted' }
+
   backend-turn:
     name: Compile authenticated TURN credential issuer (Spring Boot JDK 21)
     runs-on: ubuntu-latest
