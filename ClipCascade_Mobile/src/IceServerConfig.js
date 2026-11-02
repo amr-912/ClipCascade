@@ -6,6 +6,7 @@ const CACHE_GUARD_MS = 5 * 60 * 1000;
 const FAILED_RETRY_MS = 20 * 1000;
 let cache = null;
 let inFlight = null;
+let inFlightKey = null;
 
 const isIceUri = u => typeof u === 'string' && u.length < 300 &&
   /^(stun|stuns|turn|turns):[^\s]+$/i.test(u);
@@ -52,8 +53,11 @@ const loadIceServerConfig = async (serverUrl, stunUrl, opts = {}) => {
   const now = clock();
   if (cache && cache.url === serverUrl && cache.stun === stunUrl &&
       now < cache.until) return cache.result;
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  // A concurrent login/server switch must never reuse another origin's ICE
+  // credentials. Dedupe only requests for this exact endpoint and STUN.
+  const requestKey = JSON.stringify([serverUrl, stunUrl]);
+  if (inFlight && inFlightKey === requestKey) return inFlight;
+  const flight = (async () => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
     try {
@@ -82,8 +86,17 @@ const loadIceServerConfig = async (serverUrl, stunUrl, opts = {}) => {
     } finally {
       clearTimeout(timer);
     }
-  })().finally(() => { inFlight = null; });
-  return inFlight;
+  })();
+  const tracked = flight.finally(() => {
+    // Completion of the old request must not clear a newer in-flight one.
+    if (inFlight === tracked) {
+      inFlight = null;
+      inFlightKey = null;
+    }
+  });
+  inFlightKey = requestKey;
+  inFlight = tracked;
+  return tracked;
 };
 
 module.exports = {normalizeIceResponse, loadIceServerConfig, fallback};
