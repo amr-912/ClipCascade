@@ -11,6 +11,11 @@ on:
       - '.github/workflows/clipboard_windows_tests.yml'
   workflow_dispatch:
 
+# Superseded draft revisions should not build several obsolete MSIs at once.
+concurrency:
+  group: windows-clipboard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

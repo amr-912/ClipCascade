@@ -14,7 +14,8 @@ from utils.cipher_manager import CipherManager
 from clipboard.clipboard_manager import ClipboardManager
 from utils.notification_manager import NotificationManager
 from utils.request_manager import RequestManager
-from utils.ssl_helper import websocket_sslopt_for_config
+from utils.ssl_helper import websocket_sslopt_for_config, requests_verify_arg
+from p2p.ice_server_config import fetch_ice_servers
 from core.constants import *
 from aiortc import (
     RTCPeerConnection,
@@ -79,6 +80,17 @@ class P2PManager(ReconnectMixin, WSInterface):
         # immediately. Runs only on the asyncio signaling loop.
         self._peer_disconnect_grace_handles: Dict[str, asyncio.TimerHandle] = {}
         self._dc_heartbeat_handle: Optional[asyncio.TimerHandle] = None
+        # Optional per-peer ACK protocol negotiated via existing keepalive.
+        # Legacy clients ignore the extra key; no retries to legacy peers.
+        self._ack_capable_peers: set[str] = set()
+        self._pending_acks: Dict[str, dict] = {}
+        self._ack_timeout_sec = 20
+        self._ack_max_retries = 2
+        # Ephemeral TURN credentials in RAM only; never saved or included in logs.
+        self._ice_servers = []
+        self._ice_expiry = 0.0
+        self._ice_turn_ready = False
+        self._turn_route_index: Dict[str, int] = {}
 
         # Event loop for asyncio
         self.loop = asyncio.new_event_loop()
@@ -101,7 +113,7 @@ class P2PManager(ReconnectMixin, WSInterface):
         if self.disconnected or self._p2p_shutting_down or not self.is_connected:
             return
         self._prune_stale_receiving_fragments()
-        ping = json.dumps({"_cc_keepalive": True})
+        ping = json.dumps({"_cc_keepalive": True, "ackProtocol": 1})
         for ch in list(self.data_channels.values()):
             try:
                 if getattr(ch, "readyState", "") == "open":
@@ -145,6 +157,7 @@ class P2PManager(ReconnectMixin, WSInterface):
         with self._live_connections_lock:
             n = self.live_connections
         stats += f" Peers: {n}"
+        stats += " | ICE: TURN available" if self._ice_turn_ready else " | ICE: direct/STUN only"
         if self.sending_fragment_stats is not None:
             stats += f" | Sending: {self.sending_fragment_stats}"
         if self.receiving_fragment_stats is not None:
@@ -174,6 +187,9 @@ class P2PManager(ReconnectMixin, WSInterface):
             self.schedule_task(self._prepare_reconnect_bootstrap()).result(timeout=90)
             if self.disconnected:
                 return False, "Websocket disconnected"
+            # Refresh before signaling to avoid STUN-only ICE candidates on a
+            # VPN that would otherwise need a TURN relay.
+            self._refresh_ice_servers()
             self.ws_client = websocket.WebSocketApp(
                 url=self.config.data["websocket_url"],
                 header={"Cookie": RequestManager.format_cookie(self.config.data["cookie"])},
@@ -392,6 +408,8 @@ class P2PManager(ReconnectMixin, WSInterface):
     async def _cleanup_peer_connections(self, clear_bootstrap_state: bool = True):
         self._p2p_shutting_down = True
         self._cancel_dc_heartbeat()
+        self._clear_all_acks()
+        self._ack_capable_peers.clear()
         for timer in self._peer_disconnect_grace_handles.values():
             timer.cancel()
         self._peer_disconnect_grace_handles.clear()
@@ -418,6 +436,7 @@ class P2PManager(ReconnectMixin, WSInterface):
                 if clear_bootstrap_state:
                     self._pending_peer_list = None
                 self._peer_recovery_locks.clear()
+                self._turn_route_index.clear()
                 with self._live_connections_lock:
                     self.live_connections = 0
         finally:
@@ -464,6 +483,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         # Find which peers are no longer present
         stale_ids = set(self.peer_connections.keys()) - updated_peers
         for old_pid in stale_ids:
+            self._clear_peer_ack(old_pid)
+            self._ack_capable_peers.discard(old_pid)
+            self._turn_route_index.pop(old_pid, None)
             timer = self._peer_disconnect_grace_handles.pop(old_pid, None)
             if timer is not None:
                 timer.cancel()
@@ -496,6 +518,8 @@ class P2PManager(ReconnectMixin, WSInterface):
 
     async def _dispose_peer_connection(self, peer_id: str) -> None:
         """Close and drop one peer's DC/PC without changing self.peers (used by recovery and offer handling)."""
+        self._clear_peer_ack(peer_id)
+        self._ack_capable_peers.discard(peer_id)
         timer = self._peer_disconnect_grace_handles.pop(peer_id, None)
         if timer is not None:
             timer.cancel()
@@ -551,6 +575,12 @@ class P2PManager(ReconnectMixin, WSInterface):
             ):
                 return
 
+            await asyncio.to_thread(self._refresh_ice_servers)
+            # When aioice's one TURN candidate is blocked, the next ICE
+            # reconstruction must try the next verified Cloudflare route.
+            self._turn_route_index[remote_peer_id] = (
+                self._turn_route_index.get(remote_peer_id, 0) + 1
+            )
             pc = self._create_peer_connection(remote_peer_id)
             self.peer_connections[remote_peer_id] = pc
 
@@ -560,14 +590,41 @@ class P2PManager(ReconnectMixin, WSInterface):
                 self._setup_data_channel(remote_peer_id, channel)
                 await self._create_offer(remote_peer_id)
 
+    def _refresh_ice_servers(self):
+        """Fetch expiring authenticated credentials from /ice-servers (max 4s)."""
+        if time.time() < self._ice_expiry:
+            return
+        servers, expiry, has_turn = fetch_ice_servers(
+            self.config.data.get("server_url"),
+            self.config.data.get("stun_url", ""),
+            self.config.data.get("cookie"),
+            verify=requests_verify_arg(self.config),
+        )
+        # Preserve verified alternatives in RAM; only ONE TURN entry is
+        # selected for each aiortc connection (aioice's actual limit).
+        self._ice_servers = [RTCIceServer(**entry) for entry in servers]
+        self._ice_expiry = expiry
+        self._ice_turn_ready = has_turn
+
     def _create_peer_connection(self, remote_peer_id: str) -> RTCPeerConnection:
         """
         Create and return a new RTCPeerConnection, wired up with ICE-candidate and data-channel handling.
         """
+        stun_servers = []
+        turn_servers = []
+        for entry in self._ice_servers:
+            uris = entry.urls if isinstance(entry.urls, list) else [entry.urls]
+            if any(u.startswith(("turn:", "turns:")) for u in uris):
+                turn_servers.append(entry)
+            else:
+                stun_servers.append(entry)
+        if not stun_servers and not turn_servers and self.config.data.get("stun_url"):
+            stun_servers = [RTCIceServer(urls=[self.config.data["stun_url"]])]
+        selected_turn = ([turn_servers[
+            self._turn_route_index.get(remote_peer_id, 0) % len(turn_servers)
+        ]] if turn_servers else [])
         pc = RTCPeerConnection(
-            configuration=RTCConfiguration(
-                iceServers=[RTCIceServer(urls=[self.config.data["stun_url"]])]
-            )
+            configuration=RTCConfiguration(iceServers=stun_servers + selected_turn)
         )
 
         @pc.on("icecandidate")
@@ -689,6 +746,7 @@ class P2PManager(ReconnectMixin, WSInterface):
                 return
             if from_peer_id in self.peer_connections:
                 await self._dispose_peer_connection(from_peer_id)
+            await asyncio.to_thread(self._refresh_ice_servers)
             pc = self._create_peer_connection(from_peer_id)
             self.peer_connections[from_peer_id] = pc
 
@@ -763,15 +821,23 @@ class P2PManager(ReconnectMixin, WSInterface):
         @channel.on("open")
         def on_open():
             self._sync_live_connections_count()
+            try:
+                channel.send(json.dumps({"_cc_keepalive": True, "ackProtocol": 1}))
+            except Exception:
+                pass
             self.schedule_task(self._flush_pending_clipboard())
 
         if channel.readyState == "open":
             self._sync_live_connections_count()
+            try:
+                channel.send(json.dumps({"_cc_keepalive": True, "ackProtocol": 1}))
+            except Exception:
+                pass
             self.schedule_task(self._flush_pending_clipboard())
 
         @channel.on("message")
         def on_message(message):
-            self._receive(message)
+            self._receive(message, remote_peer_id, channel)
 
         @channel.on("close")
         def on_close():
@@ -782,6 +848,35 @@ class P2PManager(ReconnectMixin, WSInterface):
         def on_error(e):
             logging.error(f"[data] Data channel error with {remote_peer_id}: {e}")
             self._sync_live_connections_count()
+
+    def _clear_peer_ack(self, peer_id: str) -> None:
+        pending = self._pending_acks.pop(peer_id, None)
+        if pending is not None:
+            pending["timer"].cancel()
+
+    def _clear_all_acks(self) -> None:
+        for peer_id in list(self._pending_acks):
+            self._clear_peer_ack(peer_id)
+
+    def _watch_ack(self, peer_id, message_id, plain, payload_type, sent_hash, attempts):
+        self._clear_peer_ack(peer_id)
+        def retry_if_unconfirmed():
+            pending = self._pending_acks.get(peer_id)
+            if not pending or pending["id"] != message_id:
+                return
+            self._clear_peer_ack(peer_id)
+            # A later clipboard copy must always supersede an old retry.
+            if self.clipboard_manager.previous_clipboard_hash != sent_hash:
+                return
+            if attempts >= self._ack_max_retries:
+                logging.warning("P2P %s delivery UNCONFIRMED after receipt ACK timeout", payload_type)
+                return
+            self.schedule_task(self._send(plain, payload_type, replay=True,
+                                          attempts=attempts + 1,
+                                          target_peer_id=peer_id, expected_hash=sent_hash))
+        timer = self.loop.call_later(self._ack_timeout_sec, retry_if_unconfirmed)
+        self._pending_acks[peer_id] = {"id": message_id, "timer": timer,
+                                       "type": payload_type}
 
     def send(self, payload: str, payload_type: str = "text"):
         self.schedule_task(self._send(payload, payload_type))
@@ -828,7 +923,9 @@ class P2PManager(ReconnectMixin, WSInterface):
         await asyncio.sleep(0)
         return True
 
-    async def _send(self, payload: str, payload_type: str = "text"):
+    async def _send(self, payload: str, payload_type: str = "text",
+                    replay: bool = False, attempts: int = 0,
+                    target_peer_id: Optional[str] = None, expected_hash=None):
         original_payload = payload
         previous_hash = None
         sent_hash = None
@@ -837,14 +934,21 @@ class P2PManager(ReconnectMixin, WSInterface):
                 (peer_id, channel)
                 for peer_id, channel in list(self.data_channels.items())
                 if getattr(channel, "readyState", "") == "open"
+                and (target_peer_id is None or peer_id == target_peer_id)
             ]
             if not channels:
-                self._remember_pending_clipboard(original_payload, payload_type)
+                if not replay:
+                    self._remember_pending_clipboard(original_payload, payload_type)
                 logging.warning("Clipboard outbound %s deferred: no open P2P data channel", payload_type)
                 return  # Do not record payload hash as delivered.
 
             previous_hash = self.clipboard_manager.previous_clipboard_hash
-            if not self.clipboard_manager.has_clipboard_changed(payload):
+            if not replay:
+                if not self.clipboard_manager.has_clipboard_changed(payload):
+                    return
+                # Only a genuinely NEW copy supersedes in-flight receipt ACKs.
+                self._clear_all_acks()
+            elif expected_hash is not None and previous_hash != expected_hash:
                 return
             sent_hash = self.clipboard_manager.previous_clipboard_hash
 
@@ -900,8 +1004,12 @@ class P2PManager(ReconnectMixin, WSInterface):
                     self.sending_fragment_stats = (
                         f"{metadata['index']}/{metadata['totalFragments']}"
                     )
-            # These chunks have been queued, not acknowledged by the receiver.
+            # Queued to SCTP, never call this delivered until an ACK arrives.
             logging.info("P2P outbound %s queued all %d fragments", payload_type, len(fragments))
+            for peer_id, _channel in channels:
+                if peer_id in self._ack_capable_peers:
+                    self._watch_ack(peer_id, metadata["id"], original_payload,
+                                    payload_type, sent_hash, attempts)
             if (self._pending_outbound_clipboard is not None and
                     self._pending_outbound_clipboard[0] == original_payload):
                 self._pending_outbound_clipboard = None
@@ -936,10 +1044,18 @@ class P2PManager(ReconnectMixin, WSInterface):
         if not self.receiving_fragments:
             self.receiving_fragment_stats = None
 
-    def _receive(self, frame: any) -> str:
+    def _receive(self, frame: any, remote_peer_id=None, channel=None) -> None:
         try:
             body = json.loads(frame)
             if isinstance(body, dict) and body.get("_cc_keepalive") is True:
+                if remote_peer_id and body.get("ackProtocol") == 1:
+                    self._ack_capable_peers.add(remote_peer_id)
+                return
+            if isinstance(body, dict) and isinstance(body.get("_cc_ack"), str):
+                pending = self._pending_acks.get(remote_peer_id)
+                if pending and pending["id"] == body["_cc_ack"]:
+                    self._clear_peer_ack(remote_peer_id)
+                    logging.info("P2P %s clipboard receipt ACK received", pending["type"])
                 return
             # Never cancel a local transfer because a remote fragment arrived.
             payload = body["payload"]
@@ -997,11 +1113,22 @@ class P2PManager(ReconnectMixin, WSInterface):
                     **CipherManager.decode_from_json_string(payload)
                 )
 
-            if self.clipboard_manager.has_clipboard_changed(payload):
+            before = self.clipboard_manager.previous_clipboard_hash
+            changed = self.clipboard_manager.has_clipboard_changed(payload)
+            accepted = not changed  # Already applied by a previous retransmission.
+            if changed:
                 self.reset_receiving_fragments()
-                self.clipboard_manager.base64_to_clipboard(
+                accepted = self.clipboard_manager.base64_to_clipboard(
                     base64_string=payload, type_=payload_type
                 )
+                if not accepted:
+                    # Failed local clipboard write must be retryable.
+                    self.clipboard_manager.previous_clipboard_hash = before
+            if (accepted and isinstance(metadata, dict) and
+                    isinstance(metadata.get("id"), str) and remote_peer_id and
+                    remote_peer_id in self._ack_capable_peers and
+                    channel is not None and getattr(channel, "readyState", "") == "open"):
+                channel.send(json.dumps({"_cc_ack": metadata["id"]}))
         except json.decoder.JSONDecodeError:
             logging.error("If cipher is enabled, please make sure it is enabled on all devices")
         except Exception as e:

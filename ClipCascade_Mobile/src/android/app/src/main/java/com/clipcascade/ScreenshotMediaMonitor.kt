@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import android.content.ContentUris
 import android.content.Context
 import android.database.ContentObserver
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -32,6 +33,10 @@ internal fun isSavedScreenshot(relativePath: String?, displayName: String?): Boo
         name.startsWith("screenshot ") ||
         name.startsWith("screenshot(")
 }
+
+// A provider returning no cursor is NOT evidence there are no new images.
+internal fun requireScreenshotScanCursor(cursor: Cursor?): Cursor =
+    cursor ?: throw IllegalStateException("MediaStore screenshot scan unavailable")
 
 internal class ScreenshotMediaMonitor(
     private val context: Context,
@@ -100,6 +105,9 @@ internal class ScreenshotMediaMonitor(
                 onReady(true)
             } catch (_: Exception) {
                 active = false
+                // Failed baseline/registration must never leave a live executor
+                // or fall back to scanning screenshots from the beginning.
+                executor.shutdownNow()
                 observer?.let {
                     try { resolver.unregisterContentObserver(it) } catch (_: Exception) {}
                 }
@@ -127,7 +135,7 @@ internal class ScreenshotMediaMonitor(
         "${MediaStore.Images.Media._ID} DESC",
     )?.use { cursor ->
         if (cursor.moveToFirst()) cursor.getLong(0) else 0L
-    } ?: 0L
+    } ?: throw IllegalStateException("MediaStore unavailable: refuse to scan history")
 
     private fun scanNewImages() {
         if (!active || scanInFlight) return
@@ -152,13 +160,18 @@ internal class ScreenshotMediaMonitor(
                 projection.add(MediaStore.MediaColumns.RELATIVE_PATH)
                 projection.add(MediaStore.MediaColumns.IS_PENDING)
             }
-            resolver.query(
+            // A transient null cursor is a provider failure, NOT an empty
+            // result. Treat it like a query exception and schedule the same
+            // bounded retry; otherwise a screenshot can be lost forever when
+            // Android emits no second media notification.
+            val cursor = resolver.query(
                 mediaUri,
                 projection.toTypedArray(),
                 "$idColumn > ?",
                 arrayOf(baselineId.toString()),
                 "$idColumn ASC",
-            )?.use { cursor ->
+            ).let(::requireScreenshotScanCursor)
+            cursor.use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow(idColumn)
                 val nameIndex = cursor.getColumnIndexOrThrow(nameColumn)
                 val sizeIndex = cursor.getColumnIndexOrThrow(sizeColumn)
@@ -183,7 +196,15 @@ internal class ScreenshotMediaMonitor(
                     }
                     val uri = ContentUris.withAppendedId(mediaUri, id)
                     if (!active) break
-                    // Mark first: observers often fire repeatedly for one screenshot.
+                    // Do not mark a screenshot delivered until the event is
+                    // actually emitted. A bridge exception must be retryable.
+                    try {
+                        deliver(uri)
+                    } catch (_: Exception) {
+                        needsRetry = true
+                        if (earliestIncompleteId == null) earliestIncompleteId = id
+                        continue
+                    }
                     delivered.add(id)
                     // Bound de-dup metadata for months-long foreground sessions.
                     if (delivered.size > 2048) {
@@ -192,7 +213,6 @@ internal class ScreenshotMediaMonitor(
                         delivered.removeAll { it < floor }
                         baselineId = maxOf(baselineId, floor - 1)
                     }
-                    deliver(uri)
                 }
                 // Progress the high-water mark without skipping unfinished
                 // screenshots. Normal camera/gallery additions are never sent.
@@ -203,7 +223,9 @@ internal class ScreenshotMediaMonitor(
                 }
             }
         } catch (_: Exception) {
-            // Losing media access (permission revoked) must not expose any data.
+            // Provider queries can fail transiently during photo finalization.
+            // Retry a bounded number of times without walking old history.
+            needsRetry = true
         } finally {
             scanInFlight = false
             if (active && needsRetry && incompleteRetries < maxIncompleteRetries) {

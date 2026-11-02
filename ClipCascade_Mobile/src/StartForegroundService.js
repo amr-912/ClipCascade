@@ -17,6 +17,8 @@ import {
   RTCSessionDescription,
 } from 'react-native-webrtc';
 import Clipboard from '@react-native-clipboard/clipboard';
+const {loadIceServerConfig} = require('./IceServerConfig');
+const {classifySelectedIcePath} = require('./IcePathDiagnostics');
 import {checkForUpdates} from './UpdateChecker';
 
 import {
@@ -349,20 +351,6 @@ module.exports = async (inputData = null) => {
           },
         );
 
-        // Screenshot observer is strictly opt-in, starts after clipboard event
-        // subscription, and shares the existing encrypted image transport.
-        // Old gallery content is never emitted; native observer takes a baseline.
-        if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {
-          try {
-            await ClipboardListener.startScreenshotMonitoring();
-          } catch (_) {
-            await setDataInAsyncStorage(
-              'wsStatusMessage',
-              '⚠️ Screenshot auto-sync requires full photo permission.',
-            );
-          }
-        }
-
         const clearFiles = async (expensiveCall = false) => {
           files_in_memory = null;
           if (!expensiveCall) {
@@ -660,7 +648,24 @@ module.exports = async (inputData = null) => {
           const peerOpChains = {};
           const dataChannelHeartbeatTimers = {};
           const peerDisconnectGraceTimers = {};
-          const P2P_DC_KEEPALIVE_JSON = JSON.stringify({ _cc_keepalive: true });
+          const peerIcePathTimers = {};
+          // Old clients already ignore _cc_keepalive frames; capability
+          // negotiation never injects synthetic clipboard data.
+          const P2P_DC_KEEPALIVE_JSON = JSON.stringify({
+            _cc_keepalive: true, ackProtocol: 1,
+          });
+          const ackCapablePeers = new Set();
+          const pendingAcknowledgements = {};
+          const ACK_TIMEOUT_MS = 20000;
+          const MAX_ACK_RETRIES = 2;
+          const clearPeerAck = peerId => {
+            const pending = pendingAcknowledgements[peerId];
+            if (pending?.timer) clearTimeout(pending.timer);
+            delete pendingAcknowledgements[peerId];
+          };
+          const clearAllAcks = () => {
+            Object.keys(pendingAcknowledgements).forEach(clearPeerAck);
+          };
           // Only the latest copy is retained in RAM when signaling is up but
           // the actual data channel is not ready. Never persist clipboard data.
           const PENDING_CLIPBOARD_TTL_MS = 90000;
@@ -697,6 +702,18 @@ module.exports = async (inputData = null) => {
           getP2PStatusMessage = async () => {
             let msg = '📊';
             msg += ` Peers: ${liveConnectionsCount}`;
+            // Configuration status, not a claim that the selected ICE route
+            // actually traverses TURN or that the last copy was delivered.
+            const iceMode = await getDataFromAsyncStorage('p2pIceMode');
+            msg += iceMode === 'turn-configured'
+              ? ' | ICE: TURN available' : ' | ICE: direct/STUN only';
+            // Selected path is verified from RTCStats, not from TURN config.
+            const selectedPath = await getDataFromAsyncStorage('p2pIceSelectedRoute');
+            msg += selectedPath === 'relay-selected'
+              ? ' | Path: TURN relay selected'
+              : selectedPath === 'direct-selected'
+                ? ' | Path: direct selected'
+                : ' | Path: unverified';
             if (sendingFragmentStats != null) {
               msg += ` | Sending: ${sendingFragmentStats}`;
             }
@@ -776,6 +793,8 @@ module.exports = async (inputData = null) => {
 
           async function cleanupPeerConnections() {
             p2pShuttingDown = true;
+            clearAllAcks();
+            ackCapablePeers.clear();
             try {
               for (const id of Object.keys(dataChannelHeartbeatTimers)) {
                 clearInterval(dataChannelHeartbeatTimers[id]);
@@ -939,11 +958,34 @@ module.exports = async (inputData = null) => {
           initializeWebSocketSignalingClient();
 
           // send clipboard content P2P
-          sendClipBoardP2P = async (clipContent, type_ = 'text', replay = false) => {
+          const watchAcknowledgement = (peerId, messageId, original, type, contentHash, attempts) => {
+            clearPeerAck(peerId);
+            pendingAcknowledgements[peerId] = {
+              id: messageId, type, hash: contentHash,
+              timer: setTimeout(async () => {
+                const current = pendingAcknowledgements[peerId];
+                if (!current || current.id !== messageId) return;
+                clearPeerAck(peerId);
+                // Never replay an old screenshot if a newer local copy replaced it.
+                if (previous_clipboard_content_hash !== contentHash) return;
+                if (attempts >= MAX_ACK_RETRIES) {
+                  noteClipboardStage('p2p-' + type + '-unacknowledged');
+                  p2pMsg = '⚠️ ' + type + ' delivery unconfirmed after retries';
+                  await p2pStatusMessageChanged();
+                  return;
+                }
+                await sendClipBoardP2P(original, type, true, attempts + 1, peerId);
+              }, ACK_TIMEOUT_MS),
+            };
+          };
+
+          sendClipBoardP2P = async (clipContent, type_ = 'text',
+              replay = false, ackAttempts = 0, targetPeerId = null) => {
             const originalContent = clipContent;
             try {
               if (!replay) {
-                // The most recent user copy supersedes a stale pending copy.
+                // A duplicate observer event MUST NOT cancel an outstanding ACK
+                // for the same copy. Supersede only after content-hash validation.
                 pendingOutboundClipboard = null;
               }
               await clearFiles();
@@ -959,8 +1001,9 @@ module.exports = async (inputData = null) => {
               // Signaling may say Connected while WebRTC has no usable channel.
               // In that case keep the latest copy briefly; importantly, do not
               // update previous_clipboard_content_hash until it has been queued.
-              let openChannels = Object.values(dataChannels).filter(
-                ch => ch && ch.readyState === 'open',
+              let openChannels = Object.entries(dataChannels).filter(
+                ([peerId, ch]) => (!targetPeerId || peerId === targetPeerId) &&
+                  ch && ch.readyState === 'open',
               );
               if (openChannels.length === 0) {
                 queueLatestClipboard(originalContent, type_);
@@ -983,7 +1026,8 @@ module.exports = async (inputData = null) => {
               }
 
               const hcb = await hashCB(clipContent);
-              if (!(await newCB(hcb))) return;
+              if (!replay && !(await newCB(hcb))) return;
+              if (!replay) clearAllAcks();
 
               const rawPayloadSizeInBytes = textEncoder.encode(clipContent).length;
               if (cipher_enabled === 'true') {
@@ -1017,8 +1061,9 @@ module.exports = async (inputData = null) => {
 
                   // Send to every live channel, not async forEach (which
                   // discards rejected promises and cannot enforce ordering).
-                  openChannels = Object.values(dataChannels).filter(
-                    ch => ch && ch.readyState === 'open',
+                  openChannels = Object.entries(dataChannels).filter(
+                    ([peerId, ch]) => (!targetPeerId || peerId === targetPeerId) &&
+                      ch && ch.readyState === 'open',
                   );
                   if (openChannels.length === 0) {
                     queueLatestClipboard(originalContent, type_);
@@ -1026,7 +1071,7 @@ module.exports = async (inputData = null) => {
                     await p2pStatusMessageChanged();
                     return;
                   }
-                  for (const channel of openChannels) {
+                  for (const [, channel] of openChannels) {
                     while (typeof channel.bufferedAmount === 'number' &&
                       channel.bufferedAmount >= 256 * 1024) {
                       if (sendingFragmentId !== metadata.id ||
@@ -1054,6 +1099,12 @@ module.exports = async (inputData = null) => {
                 // application-level acknowledgement by the receiving device.
                 previous_clipboard_content_hash = hcb;
                 noteClipboardStage('p2p-' + type_ + '-queued');
+                for (const [peerId] of openChannels) {
+                  if (ackCapablePeers.has(peerId)) {
+                    watchAcknowledgement(peerId, metadata.id,
+                      originalContent, type_, hcb, ackAttempts);
+                  }
+                }
               } finally {
                 if (sendingFragmentId === metadata.id) {
                   await resetSendingFragmentId();
@@ -1126,10 +1177,21 @@ module.exports = async (inputData = null) => {
           };
 
           // receive clipboard content P2P
-          const onDataChannelMessage = async messageJson => {
+          const onDataChannelMessage = async (messageJson, remotePeerId = null, channel = null) => {
             try {
               const message = JSON.parse(messageJson);
               if (message && message._cc_keepalive === true) {
+                if (message.ackProtocol === 1 && remotePeerId) {
+                  ackCapablePeers.add(remotePeerId);
+                }
+                return;
+              }
+              if (message && typeof message._cc_ack === 'string') {
+                const pending = pendingAcknowledgements[remotePeerId];
+                if (pending && pending.id === message._cc_ack) {
+                  clearPeerAck(remotePeerId);
+                  noteClipboardStage('p2p-' + pending.type + '-acknowledged');
+                }
                 return;
               }
 
@@ -1211,29 +1273,33 @@ module.exports = async (inputData = null) => {
 
               // hash clipboard content
               const hcb = await hashCB(cb);
+              let accepted = false;
               if (await newCB(hcb)) {
-                previous_clipboard_content_hash = hcb;
-
-                await resetReceivingFragments();
-                // validate clipboard size
+                // A rejected/failed clipboard write must not be acknowledged.
                 if (await validateClipboardSize(cb, type_, 'Inbound')) {
-                  // set clipboard content
                   if (type_ === 'text') {
-                    Clipboard.setString(cb);
+                    await Clipboard.setString(cb);
                   } else if (type_ === 'image') {
-                    await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(
-                      cb,
-                    );
+                    await NativeBridgeModule.copyBase64ImageToClipboardUsingCache(cb);
                   } else if (type_ === 'files') {
                     await showFilesDownloadNotification('📥 Download File(s)');
-
                     files_in_memory = cb;
-                    await setDataInAsyncStorage(
-                      'filesAvailableToDownload',
-                      'true',
-                    );
+                    await setDataInAsyncStorage('filesAvailableToDownload', 'true');
+                  } else {
+                    return;
                   }
+                  previous_clipboard_content_hash = hcb;
+                  accepted = true;
                 }
+              } else {
+                // Repeated frame after a lost ACK. Clipboard already contains
+                // this content; acknowledge without applying it twice.
+                accepted = true;
+              }
+              if (accepted && metadata?.id && remotePeerId &&
+                  ackCapablePeers.has(remotePeerId) &&
+                  channel?.readyState === 'open') {
+                channel.send(JSON.stringify({_cc_ack: metadata.id}));
               }
             } catch (e) {
               p2pMsg = '❌ P2P Inbound Error: ' + e;
@@ -1254,22 +1320,28 @@ module.exports = async (inputData = null) => {
             peers = updatedPeers;
             await removeStalePeers(updatedPeers);
 
-            peers.forEach(async pid => {
-              if (pid === myPeerId) return; // skip self
-              if (!peerConnections[pid]) {
-                // Create new PeerConnection
+            // Await each peer setup and serialize it with recovery/OFFER handling.
+            // An async forEach can race repeated PEER_LIST messages during VPN
+            // reconnect: both see an absent PC before ICE credential fetch.
+            for (const pid of updatedPeers) {
+              if (pid === myPeerId) continue;
+              await runSerializedPeerOp(pid, async () => {
+                if (p2pShuttingDown || !myPeerId || !peers.has(pid) ||
+                    peerConnections[pid]) return;
                 const pc = await createPeerConnection(pid);
+                if (p2pShuttingDown || !peers.has(pid)) {
+                  pc.close();
+                  return;
+                }
                 peerConnections[pid] = pc;
-
-                // Tie-breaker: only the "lower" ID makes the offer to avoid collisions
                 if (myPeerId < pid) {
                   const channel = await pc.createDataChannel('cliptext');
                   dataChannels[pid] = channel;
                   await setupDataChannel(pid, channel);
                   await createOffer(pid);
                 }
-              }
-            });
+              });
+            }
           };
 
           /**
@@ -1283,6 +1355,8 @@ module.exports = async (inputData = null) => {
             // 2) For each stale peer, close data channel and peer connection
             for (const oldPid of stalePeerIds) {
               delete peerOpChains[oldPid];
+              clearPeerAck(oldPid);
+              ackCapablePeers.delete(oldPid);
               if (peerDisconnectGraceTimers[oldPid]) {
                 clearTimeout(peerDisconnectGraceTimers[oldPid]);
                 delete peerDisconnectGraceTimers[oldPid];
@@ -1316,9 +1390,15 @@ module.exports = async (inputData = null) => {
           };
 
           const disposePeerConnection = async peerId => {
+            clearPeerAck(peerId);
+            ackCapablePeers.delete(peerId);
             if (peerDisconnectGraceTimers[peerId]) {
               clearTimeout(peerDisconnectGraceTimers[peerId]);
               delete peerDisconnectGraceTimers[peerId];
+            }
+            if (peerIcePathTimers[peerId]) {
+              clearTimeout(peerIcePathTimers[peerId]);
+              delete peerIcePathTimers[peerId];
             }
             if (dataChannelHeartbeatTimers[peerId]) {
               clearInterval(dataChannelHeartbeatTimers[peerId]);
@@ -1357,13 +1437,15 @@ module.exports = async (inputData = null) => {
            * Create and return a RTCPeerConnection, set up listeners for ICE + DataChannel.
            */
           const createPeerConnection = async remotePeerId => {
-            const pc = new RTCPeerConnection({
-              iceServers: [
-                {
-                  urls: stun_url,
-                },
-              ],
-            });
+            // Fetch short-lived, session-authenticated TURN credentials before
+            // each new connection; the helper caches them only in RAM. When the
+            // issuer is not configured, ordinary STUN P2P remains available.
+            const endpoint = await getDataFromAsyncStorage('server_url');
+            const ice = await loadIceServerConfig(endpoint, stun_url);
+            await setDataInAsyncStorage('p2pIceMode',
+              ice.hasTurn ? 'turn-configured' : 'direct-only');
+            await setDataInAsyncStorage('p2pIceSelectedRoute', 'unverified');
+            const pc = new RTCPeerConnection({iceServers: ice.servers});
 
             pc.onicecandidate = async event => {
               if (event.candidate) {
@@ -1382,11 +1464,48 @@ module.exports = async (inputData = null) => {
               await setupDataChannel(remotePeerId, channel);
             };
 
+            let lastIcePathWasConnected = false;
             const checkPeerConnectivity = () => {
               const st = pc.connectionState;
               const ice = pc.iceConnectionState;
+              const isConnected = st === 'connected' || ice === 'connected' ||
+                ice === 'completed';
+              // Invalidate previously verified route on every connection loss,
+              // including after the initial stats collection timer has fired.
+              if (!isConnected && lastIcePathWasConnected) {
+                setDataInAsyncStorage('p2pIceSelectedRoute', 'unverified')
+                  .catch(() => {});
+              }
+              lastIcePathWasConnected = isConnected;
               // Some Android VPN/network transitions first surface in ICE
               // state, before RTCPeerConnection.connectionState updates.
+              // Query selected ICE pair after connection. Never serialize the
+              // raw stats (which may contain IPs) or credentials to storage.
+              if ((st === 'connected' || ice === 'connected' ||
+                   ice === 'completed') && !peerIcePathTimers[remotePeerId]) {
+                peerIcePathTimers[remotePeerId] = setTimeout(async () => {
+                  delete peerIcePathTimers[remotePeerId];
+                  if (p2pShuttingDown || peerConnections[remotePeerId] !== pc)
+                    return;
+                  let path = 'unverified';
+                  try {
+                    path = classifySelectedIcePath(await pc.getStats());
+                  } catch (_) { /* instrumentation must never harm transport */ }
+                  const stillConnected = pc.connectionState === 'connected' ||
+                    pc.iceConnectionState === 'connected' ||
+                    pc.iceConnectionState === 'completed';
+                  if (!p2pShuttingDown && stillConnected &&
+                      peerConnections[remotePeerId] === pc)
+                    await setDataInAsyncStorage('p2pIceSelectedRoute', path);
+                }, 1200);
+              } else if ((st === 'disconnected' || ice === 'disconnected' ||
+                          st === 'failed' || ice === 'failed') &&
+                         peerIcePathTimers[remotePeerId]) {
+                clearTimeout(peerIcePathTimers[remotePeerId]);
+                delete peerIcePathTimers[remotePeerId];
+                setDataInAsyncStorage('p2pIceSelectedRoute', 'unverified')
+                  .catch(() => {});
+              }
               if ((st === 'disconnected' || ice === 'disconnected') &&
                   !peerDisconnectGraceTimers[remotePeerId]) {
                 // A VPN/network switch may keep ICE 'disconnected' without
@@ -1550,12 +1669,14 @@ module.exports = async (inputData = null) => {
           const setupDataChannel = async (remotePeerId, channel) => {
             channel.onopen = async () => {
               startDataChannelHeartbeat(remotePeerId, channel);
+              // Immediate capability advertisement, backwards compatible.
+              channel.send(P2P_DC_KEEPALIVE_JSON);
               await syncLiveConnectionsCount();
               await flushPendingClipboard();
             };
 
             channel.onmessage = async e => {
-              await onDataChannelMessage(e.data);
+              await onDataChannelMessage(e.data, remotePeerId, channel);
             };
 
             channel.onclose = async () => {
@@ -1588,6 +1709,20 @@ module.exports = async (inputData = null) => {
             await sendClipBoardP2P(clipContent, type_);
           }
         };
+
+        // Start only AFTER sendClipBoard exists: MediaStore callbacks must never
+        // observe an uninitialized JS transport during startup.
+        // Old gallery content is never emitted; native observer takes a baseline.
+        if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {
+          try {
+            await ClipboardListener.startScreenshotMonitoring();
+          } catch (_) {
+            await setDataInAsyncStorage(
+              'wsStatusMessage',
+              '⚠️ Screenshot auto-sync requires full photo permission.',
+            );
+          }
+        }
 
         // terminate service when wsIsRunning is false
         const stopServices = async () => {

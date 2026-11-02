@@ -1,0 +1,24 @@
+# Optional separate Worker deployment. Does NOT replace signaling or auth.
+# The Cloudflare zone must be owned/authorized by the operator.
+name = "clipcascade-turn-issuer"
+main = "worker.mjs"
+compatibility_date = "2026-11-01"
+workers_dev = false
+
+routes = [
+  # Cloudflare route matching includes query strings, so a trailing * is
+# mandatory for /ice-servers?check=... and other legitimate cache busters.
+  # worker.mjs enforces pathname === '/ice-servers', rejecting prefixed paths.
+  { pattern = "sync.world-honey.com/ice-servers*", zone_name = "world-honey.com" }
+]
+
+[vars]
+CLIPCASCADE_AUTH_ORIGIN = "https://sync.world-honey.com/"
+# The original Spring server uses /whoami; the existing custom relay has
+# /validate-session. Do not enable the latter without verifying its response
+# for both authorized and unauthorized JSESSIONID cookies.
+# CLIPCASCADE_AUTH_MODE = "validate-session"
+
+# Never put TURN_KEY_ID or TURN_KEY_API_TOKEN here!
+# Use: wrangler secret put TURN_KEY_ID
+#      wrangler secret put TURN_KEY_API_TOKEN

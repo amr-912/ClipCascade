@@ -1,7 +1,10 @@
 package com.clipcascade
 
 import android.app.Application
+import android.database.MatrixCursor
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.fail
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -12,6 +15,21 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33, 35], application = Application::class)
 class ScreenshotMediaMonitorTest {
+    @Test fun mediaStoreNullCursorIsNotSilentlyTreatedAsEmpty() {
+        try {
+            requireScreenshotScanCursor(null)
+            fail("A null provider cursor must trigger the bounded scan retry")
+        } catch (_: IllegalStateException) {
+            // The monitor's catch/finally schedules a retry.
+        }
+        val cursor = MatrixCursor(arrayOf("_id"))
+        try {
+            assertSame(cursor, requireScreenshotScanCursor(cursor))
+        } finally {
+            cursor.close()
+        }
+    }
+
     @Test fun screenshotsSubfolderMatches() {
         assertTrue(isSavedScreenshot("DCIM/Screenshots/", "20261030_0325.png"))
         assertTrue(isSavedScreenshot("Pictures/Screenshots/", "img.jpeg"))

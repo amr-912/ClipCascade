@@ -47,12 +47,13 @@ function fakeTransport() {
     sleep: async () => {},
     noteClipboardStage: () => {},
     Date, Object, JSON, String,
+    setTimeout: () => 0, clearTimeout: () => {},
   };
   context.newCB = async hcb => context.previous_clipboard_content_hash !== hcb;
   vm.createContext(context);
   vm.runInContext(
-    segment('          const PENDING_CLIPBOARD_TTL_MS = 90000;', '\n          // Fragment variables') +
-    '\n' + segment("          sendClipBoardP2P = async (clipContent, type_ = 'text', replay = false) => {", '\n          // stop events and connection P2P'),
+    segment('          const ackCapablePeers = new Set();', '\n          // Fragment variables') +
+    '\n' + segment('          // send clipboard content P2P', '\n          // stop events and connection P2P'),
     context
   );
   context.setOpenPeer = () => {
@@ -108,7 +109,7 @@ test('receipt of a remote image cannot consume the next genuine Android copy', a
 });
 
 test('incoming fragments never cancel an unrelated outbound transfer', () => {
-  const incoming = segment('          const onDataChannelMessage = async messageJson => {',
+  const incoming = segment('          const onDataChannelMessage = async (messageJson, remotePeerId = null, channel = null) => {',
     '\n          /**\n           * The server gave us');
   assert.doesNotMatch(incoming, /resetSendingFragmentId\(\)/);
 });
@@ -150,6 +151,23 @@ test('multiple local images and a subsequent text copy remain independently send
   await context.sendClipBoardP2P('my handwritten note after screenshot', 'text');
   assert.deepEqual(outputs.map(x => x.type), ['image', 'text']);
   assert.equal(outputs[1].payload, 'my handwritten note after screenshot');
+});
+
+test('saved Samsung screenshot survives signaling-only VPN gap and sends after DataChannel recovery', async () => {
+  const {context, outputs} = fakeTransport();
+  const screenshotUri = 'content://media/external/images/media/1337';
+  await context.sendClipBoardP2P(screenshotUri, 'image');
+  assert.equal(context.getPending().content, screenshotUri);
+  assert.equal(context.getPending().type, 'image');
+  assert.equal(outputs.length, 0);
+  assert.equal(context.previous_clipboard_content_hash, '');
+  context.setOpenPeer();
+  await context.flush();
+  assert.equal(outputs.length, 1);
+  assert.equal(outputs[0].type, 'image');
+  assert.equal(outputs[0].payload, 'aW1hZ2U=');
+  assert.equal(context.getPending(), null);
+  assert.equal(context.previous_clipboard_content_hash, 'aW1hZ2U=');
 });
 
 test('Android clipboard selection prefers an image URI over text/plain in mixed MIME', () => {
@@ -303,4 +321,13 @@ test('screenshot observer defers unfinished image rows and advances cursor past 
   assert.match(watcher, /earliestIncompleteId/);
   assert.match(watcher, /lastCompletedId/);
   assert.match(watcher, /handler\.postDelayed\(scheduleScan, 1600L\)/);
+});
+
+
+test('screenshot media observer starts only after the encrypted outbound sender is defined', () => {
+  const sender = source.indexOf('const sendClipBoard = async (clipContent, type_ = \'text\') => {');
+  const monitor = source.indexOf("if ((await getDataFromAsyncStorage('auto_sync_screenshots')) === 'true') {");
+  assert.ok(sender >= 0, 'outbound sender must exist');
+  assert.ok(monitor > sender, 'observer cannot emit until JS transport is ready');
+  assert.match(source.slice(sender, monitor), /sendClipBoardP2P\(clipContent, type_\)/);
 });

@@ -1,4 +1,4 @@
-import {Alert, AppState, Linking} from 'react-native';
+import {Alert, AppState, Linking, NativeModules} from 'react-native';
 import notifee, {AndroidImportance} from '@notifee/react-native';
 import {getDataFromAsyncStorage} from './AsyncStorageManagement';
 import {APP_VERSION} from './AppVersion';
@@ -10,6 +10,10 @@ const VERSION_URL =
 export const RELEASE_URL =
   'https://github.com/Sathvik-Rao/ClipCascade/releases/latest';
 export const UPDATE_NOTIFICATION_ID = 'ClipCascade_Update';
+// The separately signed preview is maintained in the fork's CI; upstream APKs
+// cannot safely replace it and must not repeatedly prompt to downgrade it.
+const isForkPreview = () =>
+  NativeModules.ClipboardListener?.applicationId === 'com.clipcascade.preview';
 
 export const parseVersion = value => {
   if (typeof value !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(value.trim())) {
@@ -50,6 +54,7 @@ export const subscribeToUpdates = listener => {
 };
 
 export const presentUpdate = async () => {
+  if (isForkPreview()) return;
   const version = status[1];
   if (!status[0] || alertInFlight || alertedVersions.has(version)) {
     return;
@@ -114,6 +119,7 @@ export const setUpdateFocused = value => {
 };
 
 export const checkForUpdates = ({force = false} = {}) => {
+  if (isForkPreview()) return Promise.resolve([false, '']);
   if (inFlight) {
     return inFlight;
   }

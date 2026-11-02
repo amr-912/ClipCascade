@@ -3,6 +3,7 @@ import logging
 import re
 import threading
 import time
+from core.release_channel import PREVIEW_BUILD
 
 
 CHECK_INTERVAL = 24 * 60 * 60
@@ -26,6 +27,10 @@ class UpdateChecker:
         self._thread = None
 
     def start(self):
+        if PREVIEW_BUILD:
+            # This fork Preview is a different build channel, even when the
+            # upstream semver is greater; never direct it to overwrite itself.
+            return
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, daemon=True, name="update-checker")
             self._thread.start()
@@ -36,7 +41,7 @@ class UpdateChecker:
     def claim_alert(self, enabled):
         """UI callers claim only after deciding how to present an alert."""
         with self._lock:
-            if not enabled or not self.status or not self.status[0]:
+            if PREVIEW_BUILD or not enabled or not self.status or not self.status[0]:
                 return None
             version = self.status[1]
             if version in self._alerted:

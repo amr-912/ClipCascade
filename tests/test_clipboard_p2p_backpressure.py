@@ -10,6 +10,7 @@ import logging
 import pathlib
 import time
 import types
+import typing
 import uuid
 
 SOURCE = pathlib.Path(__file__).resolve().parents[1] / "ClipCascade_Desktop/src/p2p/p2p_manager.py"
@@ -18,13 +19,14 @@ SOURCE = pathlib.Path(__file__).resolve().parents[1] / "ClipCascade_Desktop/src/
 def get_sender():
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     original = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "P2PManager")
-    names = {"_send", "_send_chunk_with_backpressure", "_remember_pending_clipboard", "_flush_pending_clipboard"}
+    names = {"_send", "_send_chunk_with_backpressure", "_remember_pending_clipboard", "_flush_pending_clipboard", "_clear_peer_ack", "_clear_all_acks", "_watch_ack"}
     methods = [n for n in original.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
     assert {n.name for n in methods} == names
     methods.append(ast.parse("@staticmethod\ndef fragment_string(payload):\n    return [payload]").body[0])
+    methods.append(ast.parse("def __init__(self):\n    self._ack_capable_peers=set()\n    self._pending_acks={}\n    self._ack_timeout_sec=20\n    self._ack_max_retries=2").body[0])
     isolated = ast.Module(body=[ast.ClassDef(name="P2PManager", bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
     ast.fix_missing_locations(isolated)
-    env = {"json": json, "time": time, "asyncio": asyncio, "uuid": uuid, "logging": logging}
+    env = {"json": json, "time": time, "asyncio": asyncio, "uuid": uuid, "logging": logging, "Optional": typing.Optional}
     exec(compile(isolated, str(SOURCE), "exec"), env)
     return env["P2PManager"]
 
@@ -158,3 +160,73 @@ def test_vpn_disconnection_recovery_grace_is_bounded_and_cancelled_on_teardown()
     assert "self._peer_disconnect_grace_handles.clear()" in source
     assert "self._peer_disconnect_grace_handles.pop(peer_id, None)" in source
     assert "self._recover_peer_transport(remote_peer_id, pc)" in source
+
+
+
+def test_duplicate_copy_does_not_cancel_outstanding_receipt_ack():
+    mgr = get_sender()()
+    ch = Channel()
+    mgr.data_channels = {"phone": ch}
+    mgr._ack_capable_peers.add("phone")
+    mgr.config = types.SimpleNamespace(data={"cipher_enabled": False})
+    state = {"hash": ""}
+
+    def changed(text):
+        if text == state["hash"]:
+            return False
+        state["hash"] = text
+        return True
+
+    class Clipboard:
+        has_clipboard_changed = staticmethod(changed)
+
+        @property
+        def previous_clipboard_hash(self):
+            return state["hash"]
+
+        @previous_clipboard_hash.setter
+        def previous_clipboard_hash(self, value):
+            state["hash"] = value
+
+    mgr.clipboard_manager = Clipboard()
+    mgr.loop = types.SimpleNamespace(call_later=lambda _secs, _fn: types.SimpleNamespace(cancel=lambda: None))
+    mgr._pending_outbound_clipboard = None
+    mgr.reset_sending_fragment_id = lambda: setattr(mgr, "sending_fragment_id", "")
+    mgr.sending_fragment_id = ""
+    mgr.sending_fragment_stats = None
+
+    async def scenario():
+        await mgr._send("new copied note", "text")
+        old_id = mgr._pending_acks["phone"]["id"]
+        await mgr._send("new copied note", "text")
+        assert mgr._pending_acks["phone"]["id"] == old_id
+        assert len(ch.sent) == 1
+        await mgr._send("a different note", "text")
+        assert mgr._pending_acks["phone"]["id"] != old_id
+        assert len(ch.sent) == 2
+    asyncio.run(scenario())
+
+
+def test_ack_retransmission_targets_only_missing_peer():
+    mgr = get_sender()()
+    first, second = Channel(), Channel()
+    mgr.data_channels = {"phone": first, "laptop": second}
+    mgr._ack_capable_peers.update({"phone", "laptop"})
+    mgr.config = types.SimpleNamespace(data={"cipher_enabled": False})
+    mgr.clipboard_manager = types.SimpleNamespace(
+        has_clipboard_changed=lambda p: True,
+        previous_clipboard_hash=777,
+    )
+    mgr.loop = types.SimpleNamespace(call_later=lambda _secs, _fn: types.SimpleNamespace(cancel=lambda: None))
+    mgr._pending_outbound_clipboard = None
+    mgr.reset_sending_fragment_id = lambda: setattr(mgr, "sending_fragment_id", "")
+    mgr.sending_fragment_id = ""
+    mgr.sending_fragment_stats = None
+
+    async def scenario():
+        await mgr._send("photo data", "image")
+        assert len(first.sent) == 1 and len(second.sent) == 1
+        await mgr._send("photo data", "image", replay=True, attempts=1,
+                        target_peer_id="phone", expected_hash=777)
+        assert len(first.sent) == 2 and len(second.sent) == 1
+    asyncio.run(scenario())

@@ -29,6 +29,17 @@ import com.facebook.react.bridge.Promise
 // It does not change the image URI, MIME type, or Samsung clipboard history.
 internal const val CLIPCASCADE_REMOTE_IMAGE_LABEL = "ClipCascade Remote Image"
 
+
+/** Metadata-only stages: reject arbitrary strings, URIs, image data and secrets. */
+internal fun isSafeClipboardTransportStage(stage: String): Boolean = stage in setOf(
+    "js-image", "js-text", "js-files",
+    "p2p-image-pending", "p2p-text-pending", "p2p-files-pending",
+    "p2p-image-queued", "p2p-text-queued", "p2p-files-queued",
+    "p2p-image-error", "p2p-text-error", "p2p-files-error",
+    "p2p-image-acknowledged", "p2p-text-acknowledged", "p2p-files-acknowledged",
+    "p2p-image-unacknowledged", "p2p-text-unacknowledged", "p2p-files-unacknowledged"
+)
+
 class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private var clipboardManager: ClipboardManager =
         reactContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -270,13 +281,10 @@ class ClipboardListenerModule(reactContext: ReactApplicationContext) : ReactCont
 
     @ReactMethod
     fun recordTransportStage(stage: String) {
-        // Explicit whitelist, so JS cannot accidentally record payload or URI.
-        if (stage in setOf(
-                "js-image", "js-text", "js-files",
-                "p2p-image-pending", "p2p-text-pending", "p2p-files-pending",
-                "p2p-image-queued", "p2p-text-queued", "p2p-files-queued",
-                "p2p-image-error", "p2p-text-error", "p2p-files-error"
-            )) {
+        // Accept only fixed metadata states. In particular, the WebRTC ACK
+        // handlers must not disappear from the diagnostic counters merely
+        // because the bridge's stage whitelist predates ACK support.
+        if (isSafeClipboardTransportStage(stage)) {
             lastTransportStage = stage
             transportEvents.incrementAndGet()
         }
