@@ -90,6 +90,12 @@ try {
   Emit 'SESSION_FORMAT' 'SIGNED_TWO_PART_CANDIDATE'
   Emit 'SIGNATURE_VERIFIED' 'False'
   Emit 'PAYLOAD_VERSION_ONE' ($payload.v -eq 1)
+  # A pre-login CSRF token may claim auth=false. This is not verified.
+  if ($payload.auth -is [bool]) {
+    Emit 'DECLARED_AUTHENTICATED' $payload.auth
+  } else {
+    Emit 'DECLARED_AUTHENTICATED' 'Unknown'
+  }
   $username = [string]$config.username
   if ($username -and $payload.sub -is [string] -and $payload.sub) {
     Emit 'SUBJECT_MATCHES_LOCAL_CONFIG' ([string]::Equals(
