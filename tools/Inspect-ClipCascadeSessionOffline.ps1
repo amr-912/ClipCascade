@@ -70,51 +70,7 @@ try {
   # The original 2026-10-03 Worker reportedly used:
   # base64url(JSON{v,sub,auth,csrf,exp}).base64url(HMAC-SHA256).
   # An opaque cookie is also a legitimate possibility after source changes.
-  if (-not ($session -cmatch '^([A-Za-z0-9_-]{8,2048})\.([A-Za-z0-9_-]{40,64})
-    Emit 'SESSION_FORMAT' 'OPAQUE_OR_DIFFERENT'
-    Emit 'RESULT' 'LOCAL_FORMAT_UNKNOWN'
-    return
-  }
-
-  $payloadText = Decode-B64Url $Matches[1]
-  if ($payloadText.Length -gt 2048) {
-    Emit 'RESULT' 'LOCAL_PAYLOAD_INVALID'
-    return
-  }
-  $payload = $payloadText | ConvertFrom-Json
-  if ($null -eq $payload -or $payload -isnot [pscustomobject]) {
-    Emit 'RESULT' 'LOCAL_PAYLOAD_INVALID'
-    return
-  }
-
-  Emit 'SESSION_FORMAT' 'SIGNED_TWO_PART_CANDIDATE'
-  Emit 'SIGNATURE_VERIFIED' 'False'
-  Emit 'PAYLOAD_VERSION_ONE' ($payload.v -eq 1)
-  $username = [string]$config.username
-  if ($username -and $payload.sub -is [string] -and $payload.sub) {
-    Emit 'SUBJECT_MATCHES_LOCAL_CONFIG' ([string]::Equals(
-      $username, [string]$payload.sub, [StringComparison]::Ordinal))
-  } else {
-    Emit 'SUBJECT_MATCHES_LOCAL_CONFIG' 'Unknown'
-  }
-
-  $exp = 0L
-  if (-not [Int64]::TryParse([string]$payload.exp, [ref]$exp) -or
-      $exp -lt 0 -or $exp -gt 4102444800L) {
-    Emit 'RESULT' 'LOCAL_EXPIRY_UNREADABLE'
-    return
-  }
-  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  Emit 'EXPIRED_BY_PAYLOAD_TIME' ($exp -le $now)
-  Emit 'EXPIRY_UTC' ([DateTimeOffset]::FromUnixTimeSeconds($exp).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ'))
-  Emit 'RESULT' 'LOCAL_METADATA_ONLY'
-} catch {
-  # Intentionally do NOT print exception messages or input values.
-  Emit 'RESULT' 'LOCAL_INSPECTION_ERROR'
-} finally {
-  Remove-Variable session,payload,payloadText,config -ErrorAction SilentlyContinue
-}
-)) {
+  if (-not ($session -cmatch '^([A-Za-z0-9_-]{8,2048})\.([A-Za-z0-9_-]{40,64})$')) {
     Emit 'SESSION_FORMAT' 'OPAQUE_OR_DIFFERENT'
     Emit 'RESULT' 'LOCAL_FORMAT_UNKNOWN'
     return
