@@ -119,3 +119,45 @@ https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
 new session or by a client-owned safe refresh path. Only then can
 `/ice-servers` mint temporary TURN credentials. Keep the existing
 production relay and official client installations unchanged.
+
+## 2026-11-01 continued investigation: historical signed-token contract (NOT live verification)
+
+The Oct 3 project conversation describes the original `raqim-clipboard-relay`
+implementation as issuing a `JSESSIONID` with a two-part
+`base64url(JSON payload).base64url(HMAC-SHA256)` format. Its reported payload
+fields were `v`, `sub`, `auth`, `csrf`, `exp`, with an **original 365-day
+expiry**; the original design reportedly did not revoke other sessions on
+login. **This is historical project information**, not an audit of the currently
+deployed Worker or `SESSION_SECRET`. Do not conclude an active cookie is valid
+or that current login is non-disruptive from this report alone.
+
+Read-only next discriminator: `tools/Inspect-ClipCascadeSessionOffline.ps1`.
+On the operator's own Windows computer, it locates the same locally persisted
+`DATA` file as the earlier TURN diagnostic, verifies the expected host, and
+parses the unsigned *metadata* portion of a two-part cookie **offline**. It
+never calls a URL, creates a session, prints a cookie or exposes the payload,
+username, password or signing key. It reports only whether the local token
+shape looks like the historical format, whether its declared `sub` matches
+the local account, whether `exp` has passed, and its UTC expiry timestamp.
+Results must be interpreted alongside the prior live `AUTH_HTTP=401`:
+
+- `LOCAL_FORMAT_UNKNOWN`: opaque cookie or changed token wire format; no
+  expiry conclusion is possible.
+- `EXPIRED_BY_PAYLOAD_TIME=True`: the unverified payload reports an expired
+  timestamp; it does not prove a particular server-side rejection rule.
+- `EXPIRED_BY_PAYLOAD_TIME=False`: the unverified payload is not expired, so
+  investigate signature/key rotation, username binding, historical session
+  origin and currently deployed validation source. **Do not** infer that the
+  HMAC or current authenticated session is valid.
+- `SUBJECT_MATCHES_LOCAL_CONFIG=False`: the signed payload's declared
+  username differs from this installation's configured username. Its contents
+  are not authenticated without the signing secret.
+- `SIGNATURE_VERIFIED=False` is intentional. The inspector never tries to
+  reconstruct, guess or disclose `SESSION_SECRET`.
+
+The report cannot itself mint TURN or clear the authentication gate. The
+actual old Worker's `/validate-session` implementation must still be audited,
+preferably via the non-secret source archive saved on October 3, and compared
+with current Cloudflare deployment version. No changes to `raqim-clipboard-relay`,
+its secrets, `sync.world-honey.com`, stable installed apps or production
+session state are warranted by this evidence alone.
