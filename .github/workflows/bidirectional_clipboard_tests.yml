@@ -110,6 +110,12 @@ jobs:
           if ($report.Contains($cookie) -or $report -match 'fixture-auth|fixture-csrf|safe-operator|JSESSIONID=') {
             throw 'Offline inspector leaked private session data'
           }
+          # The operator runs Windows PowerShell 5.1; test that engine as well
+          # as the PowerShell 7 CI shell before recommending a local command.
+          $legacy = (powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/Inspect-ClipCascadeSessionOffline.ps1 -DataPath $fixture) -join "`n"
+          if ($legacy -notmatch 'RESULT=LOCAL_METADATA_ONLY' -or
+              $legacy -notmatch 'EXPIRED_BY_PAYLOAD_TIME=False' -or
+              $legacy.Contains($cookie)) { throw 'Windows PowerShell 5.1 offline fixture failed or leaked token' }
           $null = New-SafeFixture 1000 'another-user'
           $expired = (& ./tools/Inspect-ClipCascadeSessionOffline.ps1 -DataPath $fixture) -join "`n"
           if ($expired -notmatch 'EXPIRED_BY_PAYLOAD_TIME=True' -or
