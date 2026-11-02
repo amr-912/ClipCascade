@@ -117,3 +117,18 @@ test('Android late completion of old endpoint must not clear newer in-flight TUR
   assert.equal((await newCall).hasTurn, true);
   assert.equal((await concurrentNew).hasTurn, true);
 });
+
+test('Android rejects expired, missing, or nearly expired TURN credentials', async () => {
+  let index = 0;
+  const now = Date.now();
+  for (const expiresAt of [now - 10_000, now + 30_000, undefined, 'not-a-date']) {
+    const response = {...payload};
+    if (expiresAt === undefined) delete response.expiresAt;
+    else response.expiresAt = expiresAt;
+    const result = await loadIceServerConfig('https://expired-turn-' + (++index) + '.example',
+      'stun:baseline.example:3478',
+      {now: () => now, fetcher: async () => ({ok: true, json: async () => response})});
+    assert.equal(result.hasTurn, false);
+    assert.deepEqual(result.servers, [{urls: 'stun:baseline.example:3478'}]);
+  }
+});
