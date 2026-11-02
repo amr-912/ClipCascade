@@ -143,6 +143,12 @@ Results must be interpreted alongside the prior live `AUTH_HTTP=401`:
 
 - `LOCAL_FORMAT_UNKNOWN`: opaque cookie or changed token wire format; no
   expiry conclusion is possible.
+- `DECLARED_AUTHENTICATED=False`: the unverified payload resembles an
+  initial CSRF/pre-login token rather than a completed login session in the
+  historical Worker. An HTTP 401 is consistent with that state, but its HMAC
+  and current server behavior must still be audited.
+- `DECLARED_AUTHENTICATED=True`: the payload *claims* authenticated status;
+  this proves neither a valid signature nor acceptance by the live server.
 - `EXPIRED_BY_PAYLOAD_TIME=True`: the unverified payload reports an expired
   timestamp; it does not prove a particular server-side rejection rule.
 - `EXPIRED_BY_PAYLOAD_TIME=False`: the unverified payload is not expired, so
