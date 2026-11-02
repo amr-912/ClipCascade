@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import android.content.ContentUris
 import android.content.Context
 import android.database.ContentObserver
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -32,6 +33,10 @@ internal fun isSavedScreenshot(relativePath: String?, displayName: String?): Boo
         name.startsWith("screenshot ") ||
         name.startsWith("screenshot(")
 }
+
+// A provider returning no cursor is NOT evidence there are no new images.
+internal fun requireScreenshotScanCursor(cursor: Cursor?): Cursor =
+    cursor ?: throw IllegalStateException("MediaStore screenshot scan unavailable")
 
 internal class ScreenshotMediaMonitor(
     private val context: Context,
@@ -165,7 +170,7 @@ internal class ScreenshotMediaMonitor(
                 "$idColumn > ?",
                 arrayOf(baselineId.toString()),
                 "$idColumn ASC",
-            ) ?: throw IllegalStateException("MediaStore screenshot scan unavailable")
+            ).let(::requireScreenshotScanCursor)
             cursor.use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow(idColumn)
                 val nameIndex = cursor.getColumnIndexOrThrow(nameColumn)
