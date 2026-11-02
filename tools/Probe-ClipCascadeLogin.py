@@ -122,11 +122,15 @@ def probe(username, password, opener):
     post_data = login_form(username, password, parser.value)
     status, login_body = fetch(opener, "/login", post_data)
     print("LOGIN_HTTP=" + str(status))
-    if status != 200 or "bad credentials" in login_body.lower():
+    # A successful form login may return 302/303 before the official client
+    # follows the redirect. We deliberately NEVER follow that redirect: it is
+    # neither authorization proof nor a safe reason to contact another host.
+    # Only a positive /validate-session response can establish authorization.
+    if status not in (200, 302, 303) or "bad credentials" in login_body.lower():
         print("RESULT=NEW_LOGIN_REJECTED")
         return False
 
-    # Login 200 itself is never sufficient. The existing relay must validate
+    # Login response status itself is never sufficient; the relay must validate
     # the cookie explicitly, with a strict affirmative response.
     status, body = fetch(opener, "/validate-session")
     print("AUTH_HTTP=" + str(status))
