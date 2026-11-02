@@ -153,6 +153,23 @@ test('multiple local images and a subsequent text copy remain independently send
   assert.equal(outputs[1].payload, 'my handwritten note after screenshot');
 });
 
+test('saved Samsung screenshot survives signaling-only VPN gap and sends after DataChannel recovery', async () => {
+  const {context, outputs} = fakeTransport();
+  const screenshotUri = 'content://media/external/images/media/1337';
+  await context.sendClipBoardP2P(screenshotUri, 'image');
+  assert.equal(context.getPending().content, screenshotUri);
+  assert.equal(context.getPending().type, 'image');
+  assert.equal(outputs.length, 0);
+  assert.equal(context.previous_clipboard_content_hash, '');
+  context.setOpenPeer();
+  await context.flush();
+  assert.equal(outputs.length, 1);
+  assert.equal(outputs[0].type, 'image');
+  assert.equal(outputs[0].payload, 'aW1hZ2U=');
+  assert.equal(context.getPending(), null);
+  assert.equal(context.previous_clipboard_content_hash, 'aW1hZ2U=');
+});
+
 test('Android clipboard selection prefers an image URI over text/plain in mixed MIME', () => {
   const helper = fs.readFileSync(path.join(root,
     'ClipCascade_Mobile/src/android/app/src/main/java/com/clipcascade/ClipboardContentSelector.kt'), 'utf8');
