@@ -155,13 +155,18 @@ internal class ScreenshotMediaMonitor(
                 projection.add(MediaStore.MediaColumns.RELATIVE_PATH)
                 projection.add(MediaStore.MediaColumns.IS_PENDING)
             }
-            resolver.query(
+            // A transient null cursor is a provider failure, NOT an empty
+            // result. Treat it like a query exception and schedule the same
+            // bounded retry; otherwise a screenshot can be lost forever when
+            // Android emits no second media notification.
+            val cursor = resolver.query(
                 mediaUri,
                 projection.toTypedArray(),
                 "$idColumn > ?",
                 arrayOf(baselineId.toString()),
                 "$idColumn ASC",
-            )?.use { cursor ->
+            ) ?: throw IllegalStateException("MediaStore screenshot scan unavailable")
+            cursor.use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow(idColumn)
                 val nameIndex = cursor.getColumnIndexOrThrow(nameColumn)
                 val sizeIndex = cursor.getColumnIndexOrThrow(sizeColumn)
