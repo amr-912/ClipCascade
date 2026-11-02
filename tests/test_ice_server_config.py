@@ -107,3 +107,34 @@ def test_worker_route_toml_is_valid_and_scoped_to_one_issuer_prefix():
     assert config["routes"] == [
         {"pattern": "sync.world-honey.com/ice-servers*", "zone_name": "world-honey.com"}
     ]
+
+
+def test_expired_or_missing_expiry_is_not_advertised_as_turn():
+    for expiry in [None, 0, 1000 * 1000, 1100 * 1000, "invalid"]:
+        p = mock_payload(now=1000)
+        if expiry is None:
+            del p["expiresAt"]
+        else:
+            p["expiresAt"] = expiry
+        try:
+            normalize_ice_servers(p, "stun:baseline.example:3478", now=1000)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Expired or missing TURN expiry must not be used")
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            p = mock_payload(now=1000)
+            p["expiresAt"] = 1000 * 1000
+            return p
+
+    servers, _, has_turn = fetch_ice_servers(
+        "https://sync.example", "stun:baseline.example:3478",
+        {"JSESSIONID": "fake-fixture"}, request_get=lambda *_a, **_k: Response(),
+        now=1000)
+    assert has_turn is False
+    assert servers == [{"urls": ["stun:baseline.example:3478"]}]
+
