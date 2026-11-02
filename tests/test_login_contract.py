@@ -68,6 +68,43 @@ class LoginContract(TestCase):
             self.assertTrue(mod.probe("raqim", "password-test", object()))
         self.assertEqual(urls, ["/login", "/login", "/validate-session", "/ice-servers"])
 
+    def test_post_login_redirect_is_not_followed_and_requires_session_proof(self):
+        for redirect_status in (302, 303):
+            visited = []
+            def local_fetch(_opener, path, body=None):
+                visited.append(path)
+                if path == "/login" and body is None:
+                    return 200, '<input name="_csrf" value="safe-token">'
+                if path == "/login" and body is not None:
+                    return redirect_status, ""
+                if path == "/validate-session":
+                    return 200, "OK"
+                if path == "/ice-servers":
+                    return 200, json.dumps({"iceServers": [{
+                        "urls": ["turns:turn.example:443"],
+                        "username": "ephemeral-user", "credential": "ephemeral-key"
+                    }]})
+                self.fail("unsafe external redirect or unexpected request")
+            with patch.object(mod, "fetch", local_fetch):
+                self.assertTrue(mod.probe("user", "secret-test", object()))
+            self.assertEqual(visited,
+                             ["/login", "/login", "/validate-session", "/ice-servers"])
+
+    def test_login_redirect_with_rejected_cookie_cannot_mint_turn(self):
+        visited = []
+        def local_fetch(_opener, path, body=None):
+            visited.append(path)
+            if path == "/login" and body is None:
+                return 200, '<input name="_csrf" value="safe-token">'
+            if path == "/login" and body is not None:
+                return 302, ""
+            if path == "/validate-session":
+                return 401, ""
+            self.fail("TURN must not be called for a rejected session")
+        with patch.object(mod, "fetch", local_fetch):
+            self.assertFalse(mod.probe("user", "secret-test", object()))
+        self.assertEqual(visited, ["/login", "/login", "/validate-session"])
+
     def test_401_session_prevents_turn_api_call(self):
         visited = []
         def local_fetch(_opener, path, body=None):
