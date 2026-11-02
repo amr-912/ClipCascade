@@ -137,7 +137,7 @@ jobs:
           ./gradlew :app:compileDebugKotlin -PhermesEnabled=true --no-daemon --stacktrace
       - name: Verify real Android ClipData and screenshot whitelist with Robolectric
         working-directory: ClipCascade_Mobile/src/android
-        run: ./gradlew :app:testDebugUnitTest --tests com.clipcascade.ClipboardContentSelectorTest --tests com.clipcascade.ScreenshotMediaMonitorTest -PhermesEnabled=true --no-daemon
+        run: ./gradlew :app:testDebugUnitTest --tests com.clipcascade.ClipboardContentSelectorTest --tests com.clipcascade.ScreenshotMediaMonitorTest --tests com.clipcascade.ClipboardTransportStageTest -PhermesEnabled=true --no-daemon
       - name: Package separately installable Android preview APK
         working-directory: ClipCascade_Mobile/src/android
         run: ./gradlew :app:assemblePreview -PhermesEnabled=true --no-daemon
