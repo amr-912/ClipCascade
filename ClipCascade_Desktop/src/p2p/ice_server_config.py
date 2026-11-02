@@ -5,6 +5,7 @@ persist client TURN usernames or passwords in local settings or log files.
 aiortc/aioice currently chooses the first TURN URL, so prefer TLS/TCP 443 on
 restricted VPN/firewall networks while leaving direct ICE candidates active.
 """
+import math
 import re
 import time
 from urllib.parse import urlsplit
@@ -55,13 +56,16 @@ def normalize_ice_servers(payload, fallback_stun, now=None):
     for uri, username, secret in candidates:
         servers.append({"urls": [uri], "username": username,
                         "credential": secret})
-    expiry_ms = payload.get("expiresAt", 0)
+    expiry_ms = payload.get("expiresAt")
     try:
         expiry = float(expiry_ms) / 1000
     except (TypeError, ValueError):
-        expiry = now + 1800
-    # Re-query before credential expiry; cap cached duration to 45 minutes.
-    expiry = min(now + 2700, max(now + 20, expiry - 300))
+        raise ValueError("TURN response expiry missing or invalid") from None
+    # The source issuer always supplies expiresAt. Do not silently advertise
+    # credentials that cannot survive the 5-minute renewal safety window.
+    if not math.isfinite(expiry) or expiry <= now + 300:
+        raise ValueError("TURN credentials expired or too close to expiry")
+    expiry = min(now + 2700, expiry - 300)
     return servers, expiry, True
 
 
