@@ -72,10 +72,14 @@ const loadIceServerConfig = async (serverUrl, stunUrl, opts = {}) => {
       const payload = await response.json();
       const result = normalizeIceResponse(payload, stunUrl);
       const expiry = Number(payload.expiresAt);
+      // A stale or missing issuer expiry is not a usable TURN allocation.
+      // Failing closed to STUN is better than advertising broken VPN relay.
+      if (payload.expiresAt == null || !Number.isFinite(expiry) ||
+          expiry <= now + CACHE_GUARD_MS) {
+        throw new Error('TURN credentials expired or expiry missing');
+      }
       const maxUntil = now + 45 * 60 * 1000;
-      const until = Number.isFinite(expiry)
-        ? Math.max(now + FAILED_RETRY_MS, Math.min(maxUntil, expiry - CACHE_GUARD_MS))
-        : now + 30 * 60 * 1000;
+      const until = Math.min(maxUntil, expiry - CACHE_GUARD_MS);
       cache = {url: serverUrl, stun: stunUrl, until, result};
       return result;
     } catch (_) {
